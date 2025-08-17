@@ -1,0 +1,528 @@
+<!DOCTYPE html>
+<html lang="en-IN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ISP Education | Personalized Online Coaching for ICSE, CBSE & Karnataka (Classes 8–10)</title>
+  <meta name="description" content="Personalized online coaching for Classes 8–10 (ICSE, CBSE & Karnataka). Concept-level tracking, weekly parent reports, daily tests, PPT-based lessons. Enrol for Maths, Science, Social, English, Kannada. Free laptop on choosing 3+ subjects." />
+  <meta name="theme-color" content="#0ea5e9" />
+  <meta property="og:title" content="ISP Education – Personalized Coaching (8–10)" />
+  <meta property="og:description" content="Concept-level monitoring • Weekly parent reports • Daily tests • PPT visuals • Free laptop on 3+ subjects" />
+  <meta property="og:type" content="website" />
+  <meta property="og:url" content="https://ispeducation.in/" />
+  <meta property="og:image" content="https://images.unsplash.com/photo-1584697964190-821f1eb84b1b?q=80&w=1600&auto=format&fit=crop" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <style>
+    :root{
+      --bg:#0b1220; /* navy */
+      --panel:#0f172a; /* slate-900 */
+      --muted:#94a3b8; /* slate-400 */
+      --text:#e2e8f0; /* slate-200 */
+      --brand:#0ea5e9; /* sky-500 */
+      --brand-2:#22d3ee; /* cyan-400 */
+      --ok:#10b981; /* emerald */
+      --warn:#f59e0b; /* amber */
+      --danger:#ef4444; /* red */
+      --card:#111827; /* gray-900 */
+      --border:rgba(148,163,184,0.2);
+      --radius:18px;
+      --shadow:0 10px 30px rgba(2,8,23,.35);
+    }
+    *{box-sizing:border-box}
+    html,body{margin:0;padding:0;background:linear-gradient(180deg,var(--bg),#0a0f1a 30%, #0b1220);color:var(--text);font-family:'Inter',system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;line-height:1.6}
+    a{color:inherit;text-decoration:none}
+    img{max-width:100%;display:block}
+    .container{max-width:1100px;margin:0 auto;padding:0 18px}
+    /* Header */
+    header{position:sticky;top:0;z-index:50;background:rgba(11,18,32,.7);backdrop-filter:blur(12px);border-bottom:1px solid var(--border)}
+    .nav{display:flex;align-items:center;justify-content:space-between;padding:12px 0}
+    .brand{display:flex;align-items:center;gap:10px;font-weight:800;letter-spacing:.3px}
+    .brand .logo{width:40px;height:40px;border-radius:50%;background:radial-gradient(circle at 30% 30%,var(--brand-2),var(--brand));display:grid;place-items:center;box-shadow:0 4px 20px rgba(34,211,238,.35)}
+    .brand span{font-size:18px}
+    nav ul{display:flex;gap:18px;list-style:none;margin:0;padding:0}
+    nav a{padding:8px 12px;border-radius:12px;border:1px solid transparent}
+    nav a:hover{border-color:var(--border);background:rgba(148,163,184,.06)}
+    .btn{display:inline-flex;align-items:center;gap:10px;padding:12px 16px;border-radius:14px;border:1px solid var(--border);background:linear-gradient(180deg,rgba(34,211,238,.15),rgba(14,165,233,.15));box-shadow:var(--shadow);cursor:pointer}
+    .btn.primary{background:linear-gradient(180deg,var(--brand),#0c87bd);border-color:rgba(255,255,255,.1);color:white}
+    .btn.primary:hover{filter:brightness(1.05)}
+    .btn.ghost{background:transparent}
+    .mobile-toggle{display:none}
+
+    /* Hero */
+    .hero{position:relative;padding:70px 0 40px;overflow:hidden}
+    .hero-grid{display:grid;grid-template-columns:1.2fr .8fr;gap:30px;align-items:center}
+    .badge{display:inline-flex;gap:8px;align-items:center;padding:6px 10px;border:1px solid var(--border);border-radius:999px;background:rgba(2,132,199,.12)}
+    .title{font-size:38px;line-height:1.1;margin:14px 0 10px;font-weight:800}
+    .subtitle{color:var(--muted);max-width:700px}
+    .tagline{display:flex;gap:10px;flex-wrap:wrap;margin:14px 0 24px}
+    .tag{padding:6px 10px;border-radius:999px;border:1px solid var(--border);background:rgba(148,163,184,.08);font-size:13px}
+    .hero-img{position:relative;border-radius:20px;overflow:hidden;border:1px solid var(--border);box-shadow:var(--shadow)}
+    .hero-img img{aspect-ratio:4/3;object-fit:cover}
+    .offer{position:absolute;bottom:14px;left:14px;background:rgba(15,23,42,.85);border:1px solid var(--border);padding:10px 12px;border-radius:12px}
+
+    /* Strips */
+    .strip{display:flex;gap:8px;flex-wrap:wrap;align-items:center;justify-content:center;margin:10px auto 0;color:#cbd5e1;font-size:14px}
+    .chip{border:1px dashed var(--border);padding:6px 10px;border-radius:999px}
+
+    /* Sections */
+    section{padding:60px 0;border-top:1px solid var(--border)}
+    h2{font-size:28px;margin:0 0 8px}
+    p.lead{color:var(--muted);margin:0 0 24px}
+
+    /* USP Cards */
+    .grid{display:grid;gap:18px}
+    .grid.cols-3{grid-template-columns:repeat(3,1fr)}
+    .grid.cols-2{grid-template-columns:repeat(2,1fr)}
+    .card{background:linear-gradient(180deg,var(--panel),#0b1426);border:1px solid var(--border);padding:18px;border-radius:var(--radius);box-shadow:var(--shadow)}
+    .card h3{margin:0 0 8px;font-size:18px}
+    .card p{margin:0;color:#cbd5e1}
+
+    /* Pricing */
+    .price-table{width:100%;border-collapse:separate;border-spacing:0 10px}
+    .price-table th,.price-table td{padding:12px 14px}
+    .price-table tr{background:linear-gradient(180deg,#0e1729,#0a1120);border:1px solid var(--border)}
+    .price-table tr td:first-child,.price-table tr th:first-child{border-top-left-radius:12px;border-bottom-left-radius:12px}
+    .price-table tr td:last-child,.price-table tr th:last-child{border-top-right-radius:12px;border-bottom-right-radius:12px}
+    .calc{display:flex;flex-wrap:wrap;gap:12px;align-items:center;margin-top:12px}
+    .pill{display:inline-flex;align-items:center;gap:8px;padding:8px 12px;border:1px solid var(--border);border-radius:999px}
+    .flag{font-size:12px;padding:4px 8px;border-radius:999px;border:1px solid var(--border)}
+
+    /* Report demo */
+    .bars{display:grid;gap:12px}
+    .bar{background:#0b1220;border-radius:12px;border:1px solid var(--border);overflow:hidden}
+    .bar .row{display:flex;justify-content:space-between;padding:10px 12px;color:#cbd5e1;font-size:14px}
+    .bar .track{height:10px;background:#0b1629}
+    .bar .fill{height:10px;background:linear-gradient(90deg,var(--brand-2),var(--brand))}
+
+    /* Testimonials */
+    .avatar{width:40px;height:40px;border-radius:50%;background:linear-gradient(180deg,#334155,#1f2937);border:1px solid var(--border)}
+
+    /* Form */
+    form{display:grid;gap:12px}
+    input,select,textarea{width:100%;padding:12px 14px;border-radius:12px;border:1px solid var(--border);background:#0b1220;color:#e2e8f0}
+    label{font-size:14px;color:#cbd5e1}
+    .small{font-size:12px;color:#94a3b8}
+
+    /* Footer */
+    footer{padding:30px 0;color:#a3b0c0;font-size:14px}
+
+    /* Responsive */
+    @media (max-width: 900px){
+      .hero-grid{grid-template-columns:1fr}
+      nav ul{display:none}
+      .mobile-toggle{display:inline-flex}
+      .grid.cols-3{grid-template-columns:1fr}
+      .grid.cols-2{grid-template-columns:1fr}
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="container nav">
+      <a href="#top" class="brand" aria-label="ISP Education Home">
+        <div class="logo" aria-hidden="true">🎓</div>
+        <span>ISP Education</span>
+      </a>
+      <nav>
+        <button class="btn ghost mobile-toggle" aria-label="Toggle menu" onclick="toggleMenu()">☰</button>
+        <ul id="menu">
+          <li><a href="#why">Why Us</a></li>
+          <li><a href="#pricing">Subjects & Fees</a></li>
+          <li><a href="#method">Teaching Method</a></li>
+          <li><a href="#report">Parent Reports</a></li>
+          <li><a href="#demo" class="btn primary">Book Free Demo</a></li>
+        </ul>
+      </nav>
+    </div>
+  </header>
+
+  <main id="top">
+    <!-- Hero -->
+    <section class="hero">
+      <div class="container hero-grid">
+        <div>
+          <span class="badge">ICSE • CBSE • Karnataka • Classes 8–10</span>
+          <h1 class="title">Personalized Online Coaching that tracks <em>every concept</em></h1>
+          <p class="subtitle">We assess each student's understanding and personality, design a custom learning plan, teach with real-life examples & PPT-based visuals, and conduct a same‑day concept test. Parents receive a <strong>weekly report</strong> showing exactly where their child is strong or needs support.</p>
+          <div class="tagline">
+            <span class="tag">Concept-level monitoring</span>
+            <span class="tag">Weekly parent reports</span>
+            <span class="tag">Daily concept tests</span>
+            <span class="tag">Live online classes (5×/week)</span>
+          </div>
+          <div style="display:flex;gap:12px;flex-wrap:wrap">
+            <a href="#demo" class="btn primary">Book Free Demo</a>
+            <a href="#pricing" class="btn">View Fees</a>
+          </div>
+          <div class="strip" style="margin-top:16px">
+            <span class="chip">Choose any 3+ subjects → <strong>Free Laptop</strong></span>
+            <span class="chip">Modern PPT-based teaching</span>
+            <span class="chip">Same-day tests</span>
+          </div>
+        </div>
+        <div class="hero-img">
+          <img src="https://images.unsplash.com/photo-1584697964190-821f1eb84b1b?q=80&w=1600&auto=format&fit=crop" alt="Online class with PPT and students learning" />
+          <div class="offer">
+            🎁 <strong>Offer:</strong> Enrol in <strong>3+ subjects</strong> and get a <strong>free laptop</strong>. <span class="small">T&C apply</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Why Us / USP -->
+    <section id="why">
+      <div class="container">
+        <h2>Why choose ISP Education?</h2>
+        <p class="lead">Our unique model blends personalization, modern delivery, and transparent progress tracking.</p>
+        <div class="grid cols-3">
+          <div class="card"><h3>Personalized Plan</h3><p>We evaluate each student's level & personality to tailor the learning path.</p></div>
+          <div class="card"><h3>Concept‑wise Tracking</h3><p>Every subject is split into concepts; we measure mastery of each one.</p></div>
+          <div class="card"><h3>Weekly Parent Report</h3><p>Parents see strengths & weak areas per concept—no guesswork.</p></div>
+          <div class="card"><h3>Modern Teaching</h3><p>Real-life examples and PPT-based visuals make learning stick.</p></div>
+          <div class="card"><h3>Daily Concept Tests</h3><p>Short same-day tests ensure clarity before moving ahead.</p></div>
+          <div class="card"><h3>5 Days • 2 Hours/Day</h3><p>Regular schedule builds rhythm and confidence.</p></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Subjects & Pricing with Calculator -->
+    <section id="pricing">
+      <div class="container">
+        <h2>Subjects & Fees (per year)</h2>
+        <p class="lead">Choose any subjects. Pick 3 or more to unlock the <strong>free laptop</strong> offer.</p>
+        <div class="card">
+          <div class="grid cols-2">
+            <div>
+              <table class="price-table" aria-label="Subjects and fees">
+                <thead>
+                  <tr>
+                    <th>Subject</th>
+                    <th>Fee (₹)</th>
+                    <th>Select</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr><td>Mathematics</td><td>15,000</td><td><input type="checkbox" class="choose" data-subject="Mathematics" data-price="15000" /></td></tr>
+                  <tr><td>Science</td><td>20,000</td><td><input type="checkbox" class="choose" data-subject="Science" data-price="20000" /></td></tr>
+                  <tr><td>Social</td><td>10,000</td><td><input type="checkbox" class="choose" data-subject="Social" data-price="10000" /></td></tr>
+                  <tr><td>English</td><td>15,000</td><td><input type="checkbox" class="choose" data-subject="English" data-price="15000" /></td></tr>
+                  <tr><td>Kannada</td><td>10,000</td><td><input type="checkbox" class="choose" data-subject="Kannada" data-price="10000" /></td></tr>
+                </tbody>
+              </table>
+            </div>
+            <div>
+              <div class="card" style="background:transparent">
+                <h3 style="margin-top:0">Your Selection</h3>
+                <div id="selected" class="calc" aria-live="polite"></div>
+                <div class="calc">
+                  <span class="pill">Subjects: <strong id="count">0</strong></span>
+                  <span class="pill">Total Fee: <strong>₹ <span id="total">0</span></strong></span>
+                  <span id="laptop" class="flag">Select 3+ subjects for Free Laptop</span>
+                </div>
+                <div style="margin-top:12px">
+                  <a href="#demo" class="btn primary">Proceed to Free Demo</a>
+                </div>
+                <p class="small" style="margin-top:10px">* Offer T&C: Available on first-year enrolment for 3 or more subjects per student. Limited stock. Non-cash alternative. Government ID & address proof required for delivery.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Teaching Method -->
+    <section id="method">
+      <div class="container">
+        <h2>How we teach</h2>
+        <p class="lead">A simple and effective flow to build strong foundations.</p>
+        <div class="grid cols-3">
+          <div class="card"><h3>1) Diagnose</h3><p>Quick assessments to understand prior knowledge and learning style.</p></div>
+          <div class="card"><h3>2) Explain</h3><p>Live online classes using PPT-based visuals & real-life examples.</p></div>
+          <div class="card"><h3>3) Check</h3><p>Same-day concept tests to verify understanding immediately.</p></div>
+          <div class="card"><h3>4) Practise</h3><p>Targeted homework & doubt-solving sessions.</p></div>
+          <div class="card"><h3>5) Report</h3><p>Weekly parent report highlights strengths and weak concepts.</p></div>
+          <div class="card"><h3>6) Improve</h3><p>Adaptive revision plan based on performance trend.</p></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Parent Report Highlight -->
+    <section id="report">
+      <div class="container">
+        <h2>Weekly Parent Report (example)</h2>
+        <p class="lead">See exactly which concepts your child has mastered and which need support.</p>
+        <div class="grid cols-2">
+          <div class="card">
+            <div class="bars">
+              <div class="bar">
+                <div class="row"><span>Algebra → Linear Equations</span><strong>92%</strong></div>
+                <div class="track"><div class="fill" style="width:92%"></div></div>
+              </div>
+              <div class="bar">
+                <div class="row"><span>Geometry → Circles</span><strong>76%</strong></div>
+                <div class="track"><div class="fill" style="width:76%"></div></div>
+              </div>
+              <div class="bar">
+                <div class="row"><span>Chemistry → Chemical Bonding</span><strong>84%</strong></div>
+                <div class="track"><div class="fill" style="width:84%"></div></div>
+              </div>
+              <div class="bar">
+                <div class="row"><span>Physics → Electricity</span><strong>58%</strong></div>
+                <div class="track"><div class="fill" style="width:58%"></div></div>
+              </div>
+              <div class="bar">
+                <div class="row"><span>History → National Movement</span><strong>65%</strong></div>
+                <div class="track"><div class="fill" style="width:65%"></div></div>
+              </div>
+            </div>
+          </div>
+          <div class="card">
+            <h3 style="margin-top:0">What parents receive</h3>
+            <ul>
+              <li>Concept-wise scores and accuracy</li>
+              <li>Strengths & weak concepts clearly flagged</li>
+              <li>Recommendation for next week’s focus</li>
+              <li>Attendance & homework summary</li>
+              <li>Trend line across the month</li>
+            </ul>
+            <p class="small">Note: Actual report delivered weekly via email/WhatsApp. Parent portal coming soon.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Testimonials -->
+    <section id="testimonials">
+      <div class="container">
+        <h2>Parents & Students love us</h2>
+        <p class="lead">Real feedback from real families.</p>
+        <div class="grid cols-3">
+          <div class="card">
+            <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px">
+              <div class="avatar"></div>
+              <div><strong>Anita (Parent)</strong><div class="small">Bengaluru • Class 10 CBSE</div></div>
+            </div>
+            <p>Weekly reports showed exactly where my son struggled. The targeted revision improved his Algebra scores in 3 weeks.</p>
+          </div>
+          <div class="card">
+            <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px">
+              <div class="avatar"></div>
+              <div><strong>Rohan (Student)</strong><div class="small">Mysuru • Class 9 ICSE</div></div>
+            </div>
+            <p>The PPT examples made Physics easy. Same-day tests helped me fix mistakes quickly.</p>
+          </div>
+          <div class="card">
+            <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px">
+              <div class="avatar"></div>
+              <div><strong>Priya (Parent)</strong><div class="small">Hubballi • State Board</div></div>
+            </div>
+            <p>Loved the personalized plan. My daughter is more confident now in Science.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Demo / Contact Form -->
+    <section id="demo">
+      <div class="container">
+        <h2>Book your Free Demo Class</h2>
+        <p class="lead">Fill this form and we’ll confirm on WhatsApp within a few hours.</p>
+        <div class="grid cols-2">
+          <div class="card">
+            <form id="contactForm">
+              <div>
+                <label for="name">Parent/Guardian Name</label>
+                <input id="name" name="name" placeholder="e.g., Kavitha" required />
+              </div>
+              <div>
+                <label for="phone">WhatsApp Number</label>
+                <input id="phone" name="phone" inputmode="tel" placeholder="e.g., 9XXXXXXXXX" required />
+              </div>
+              <div class="grid cols-2">
+                <div>
+                  <label for="student">Student Name</label>
+                  <input id="student" name="student" placeholder="e.g., Arjun" required />
+                </div>
+                <div>
+                  <label for="standard">Class</label>
+                  <select id="standard" name="standard" required>
+                    <option value="" disabled selected>Select</option>
+                    <option>8</option>
+                    <option>9</option>
+                    <option>10</option>
+                  </select>
+                </div>
+              </div>
+              <div class="grid cols-2">
+                <div>
+                  <label for="board">Syllabus</label>
+                  <select id="board" name="board" required>
+                    <option value="" disabled selected>Select</option>
+                    <option>ICSE</option>
+                    <option>CBSE</option>
+                    <option>Karnataka State</option>
+                  </select>
+                </div>
+                <div>
+                  <label for="city">City</label>
+                  <input id="city" name="city" placeholder="e.g., Bengaluru" />
+                </div>
+              </div>
+              <div>
+                <label>Subjects Interested</label>
+                <div class="calc" style="padding-top:6px">
+                  <label class="pill"><input type="checkbox" name="sMathematics" /> Mathematics</label>
+                  <label class="pill"><input type="checkbox" name="sScience" /> Science</label>
+                  <label class="pill"><input type="checkbox" name="sSocial" /> Social</label>
+                  <label class="pill"><input type="checkbox" name="sEnglish" /> English</label>
+                  <label class="pill"><input type="checkbox" name="sKannada" /> Kannada</label>
+                </div>
+              </div>
+              <div>
+                <label for="message">Anything we should know?</label>
+                <textarea id="message" name="message" rows="3" placeholder="Learning goals, preferred time, etc."></textarea>
+              </div>
+              <div style="display:flex;gap:12px;flex-wrap:wrap">
+                <button type="submit" class="btn primary">Submit & WhatsApp Us</button>
+                <a href="mailto:info@ispeducation.in" class="btn">Email Us</a>
+              </div>
+              <p class="small">By submitting, you agree to be contacted on WhatsApp/phone/email. We respect your privacy.</p>
+            </form>
+          </div>
+          <div class="card">
+            <h3 style="margin-top:0">Need help right now?</h3>
+            <p>Chat with our counsellor on WhatsApp:</p>
+            <p><a id="whatsLink" class="btn" href="#">Open WhatsApp</a></p>
+            <p class="small">Replace the phone number in the website code with your official counselling number to enable WhatsApp chat.</p>
+            <hr style="border-color:var(--border)" />
+            <h3>Address & Contact</h3>
+            <p>ISP Education (Online Coaching)<br/>Bengaluru, Karnataka, India</p>
+            <p>Email: <a href="mailto:info@ispeducation.in">info@ispeducation.in</a><br/>Phone/WhatsApp: <a href="#" id="displayPhone">+91 9XXXXXXXXX</a></p>
+            <p class="small">Service across India • ICSE • CBSE • Karnataka State Syllabus</p>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="container" style="display:flex;flex-wrap:wrap;gap:12px;align-items:center;justify-content:space-between">
+      <div>© <span id="year"></span> ISP Education. All rights reserved.</div>
+      <div class="small">Privacy • Terms • <a href="#demo">Contact</a></div>
+    </div>
+  </footer>
+
+  <!-- Structured Data (JSON-LD) -->
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "EducationalOrganization",
+    "name": "ISP Education",
+    "url": "https://ispeducation.in/",
+    "logo": "https://ispeducation.in/logo.png",
+    "sameAs": [
+      "https://www.facebook.com/ispeducation",
+      "https://www.instagram.com/ispeducation",
+      "https://www.youtube.com/@ispeducation"
+    ],
+    "address": {
+      "@type": "PostalAddress",
+      "addressLocality": "Bengaluru",
+      "addressRegion": "Karnataka",
+      "addressCountry": "IN"
+    },
+    "areaServed": "IN",
+    "contactPoint": {
+      "@type": "ContactPoint",
+      "contactType": "customer support",
+      "email": "info@ispeducation.in",
+      "telephone": "+91-9XXXXXXXXX"
+    }
+  }
+  </script>
+
+  <script>
+    // --- Mobile menu toggle ---
+    function toggleMenu(){
+      const menu = document.getElementById('menu');
+      menu.style.display = menu.style.display === 'flex' ? 'none' : 'flex';
+      if(menu.style.display === 'flex'){
+        menu.style.flexDirection = 'column';
+        menu.style.gap = '8px';
+        menu.style.marginTop = '10px';
+      }
+    }
+
+    // --- Pricing calculator ---
+    const chooseBoxes = () => Array.from(document.querySelectorAll('.choose'));
+    const selected = document.getElementById('selected');
+    const countEl = document.getElementById('count');
+    const totalEl = document.getElementById('total');
+    const laptopEl = document.getElementById('laptop');
+
+    function updateCalc(){
+      const choices = chooseBoxes().filter(c=>c.checked).map(c=>({name:c.dataset.subject, price:+c.dataset.price}));
+      selected.innerHTML = choices.length ? choices.map(c=>`<span class="pill">${c.name} • ₹${c.price.toLocaleString('en-IN')}</span>`).join('') : '<span class="small">No subjects selected</span>';
+      const total = choices.reduce((s,x)=>s+x.price,0);
+      countEl.textContent = choices.length;
+      totalEl.textContent = total.toLocaleString('en-IN');
+      laptopEl.textContent = choices.length >= 3 ? '✅ Eligible for Free Laptop' : 'Select 3+ subjects for Free Laptop';
+      laptopEl.style.borderColor = choices.length >= 3 ? 'rgba(16,185,129,.6)' : 'var(--border)';
+    }
+    chooseBoxes().forEach(cb=>cb.addEventListener('change', updateCalc));
+    updateCalc();
+
+    // --- Demo/Contact form: build WhatsApp message & open chat ---
+    const WAPP_NUMBER = '91XXXXXXXXXX'; // TODO: replace with your official WhatsApp number (no + or spaces)
+    const displayPhone = document.getElementById('displayPhone');
+    displayPhone.textContent = '+ ' + WAPP_NUMBER.replace(/(\d{2})(\d{5})(\d{5})/, '+$1 $2 $3');
+
+    const whatsLink = document.getElementById('whatsLink');
+    whatsLink.href = 'https://wa.me/' + WAPP_NUMBER;
+
+    document.getElementById('contactForm').addEventListener('submit', function(e){
+      e.preventDefault();
+      const name = document.getElementById('name').value.trim();
+      const phone = document.getElementById('phone').value.trim();
+      const student = document.getElementById('student').value.trim();
+      const standard = document.getElementById('standard').value;
+      const board = document.getElementById('board').value;
+      const city = document.getElementById('city').value.trim();
+      const msg = document.getElementById('message').value.trim();
+
+      const s = [];
+      ['Mathematics','Science','Social','English','Kannada'].forEach(label=>{
+        const key = 's'+label;
+        if(document.querySelector(`[name="${key}"]`).checked){ s.push(label); }
+      });
+
+      const text = `Demo Request — ISP Education%0AParent: ${encodeURIComponent(name)}%0AWhatsApp: ${encodeURIComponent(phone)}%0AStudent: ${encodeURIComponent(student)}%0AClass: ${encodeURIComponent(standard)}%0ABoard: ${encodeURIComponent(board)}%0ACity: ${encodeURIComponent(city)}%0ASubjects: ${encodeURIComponent(s.join(', ') || 'Not specified')}%0ANote: ${encodeURIComponent(msg || '-')}`;
+      const url = 'https://wa.me/' + WAPP_NUMBER + '?text=' + text;
+      window.open(url, '_blank');
+
+      // Optional: also trigger a mailto as fallback
+      const mail = `mailto:info@ispeducation.in?subject=${encodeURIComponent('Free Demo Request – ISP Education')}&body=${text.replaceAll('%0A','%0D%0A')}`;
+      setTimeout(()=>{ window.location.href = mail; }, 400);
+    });
+
+    // --- Year ---
+    document.getElementById('year').textContent = new Date().getFullYear();
+  </script>
+
+  <!-- Optional: GA4 (replace G-XXXX) -->
+  <!-- <script async src="https://www.googletagmanager.com/gtag/js?id=G-XXXXXXX"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);} gtag('js', new Date()); gtag('config','G-XXXXXXX');
+  </script> -->
+
+  <!-- How to embed Google Form instead of the custom form (optional):
+    1) Create a Google Form with the same fields.
+    2) In the form, click Send → <> Embed → copy the <iframe> code.
+    3) Replace the <form id="contactForm">...</form> block with the iframe.
+  -->
+</body>
+</html>
