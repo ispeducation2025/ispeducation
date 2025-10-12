@@ -1,0 +1,777 @@
+<!DOCTYPE html>
+<html lang="en-IN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ISP Education | Personalized Online Coaching for ICSE, CBSE & Karnataka (Classes 8–10)</title>
+  <meta name="description" content="Personalized online coaching for Classes 8–10 (ICSE, CBSE & Karnataka). Concept-level tracking, weekly parent reports, daily tests, PPT-based lessons. Enrol for Maths, Science, Social, English, Kannada. Free laptop on eligible test+class packages." />
+  <meta name="theme-color" content="#0ea5e9" />
+  <meta property="og:title" content="ISP Education – Personalized Coaching (8–10)" />
+  <meta property="og:description" content="Concept-level monitoring • Weekly parent reports • Daily tests • PPT visuals • Early-bird offers • Laptop on eligible plans" />
+  <meta property="og:type" content="website" />
+  <meta property="og:url" content="https://ispeducation.in/" />
+  <meta property="og:image" content="https://images.unsplash.com/photo-1606326608606-aa0b62935f59?q=80&w=1600&auto=format&fit=crop" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <style>
+    :root{
+      --bg:#0b1220; --panel:#0f172a; --muted:#94a3b8; --text:#e2e8f0;
+      --brand:#0ea5e9; --brand-2:#22d3ee; --ok:#10b981; --warn:#f59e0b; --danger:#ef4444;
+      --card:#111827; --border:rgba(148,163,184,0.2);
+      --radius:18px; --shadow:0 10px 30px rgba(2,8,23,.35);
+    }
+    *{box-sizing:border-box}
+    html,body{margin:0;padding:0;background:linear-gradient(180deg,var(--bg),#0a0f1a 30%, #0b1220);color:var(--text);font-family:'Inter',system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;line-height:1.6}
+    a{color:inherit;text-decoration:none}
+    img{max-width:100%;display:block}
+    .container{max-width:1150px;margin:0 auto;padding:0 18px}
+
+    /* Header */
+    header{position:sticky;top:0;z-index:50;background:rgba(11,18,32,.7);backdrop-filter:blur(12px);border-bottom:1px solid var(--border)}
+    .nav{display:flex;align-items:center;justify-content:space-between;padding:12px 0}
+    .brand{display:flex;align-items:center;gap:10px;font-weight:800;letter-spacing:.3px}
+    .brand .logo{width:40px;height:40px;border-radius:50%;background:radial-gradient(circle at 30% 30%,var(--brand-2),var(--brand));display:grid;place-items:center;box-shadow:0 4px 20px rgba(34,211,238,.35)}
+    .brand span{font-size:18px}
+    nav ul{display:flex;gap:18px;list-style:none;margin:0;padding:0}
+    nav a{padding:8px 12px;border-radius:12px;border:1px solid transparent}
+    nav a:hover{border-color:var(--border);background:rgba(148,163,184,.06)}
+    .btn{display:inline-flex;align-items:center;gap:10px;padding:12px 16px;border-radius:14px;border:1px solid var(--border);background:linear-gradient(180deg,rgba(34,211,238,.15),rgba(14,165,233,.15));box-shadow:var(--shadow);cursor:pointer}
+    .btn.primary{background:linear-gradient(180deg,var(--brand),#0c87bd);border-color:rgba(255,255,255,.1);color:white}
+    .btn.primary:hover{filter:brightness(1.05)}
+    .btn.ghost{background:transparent}
+    .mobile-toggle{display:none}
+
+    /* Hero */
+    .hero{position:relative;padding:70px 0 40px;overflow:hidden}
+    .hero-grid{display:grid;grid-template-columns:1.1fr .9fr;gap:30px;align-items:center}
+    .badge{display:inline-flex;gap:8px;align-items:center;padding:6px 10px;border:1px solid var(--border);border-radius:999px;background:rgba(2,132,199,.12)}
+    .title{font-size:40px;line-height:1.1;margin:14px 0 10px;font-weight:800}
+    .subtitle{color:var(--muted);max-width:700px}
+    .tagline{display:flex;gap:10px;flex-wrap:wrap;margin:14px 0 24px}
+    .tag{padding:6px 10px;border-radius:999px;border:1px solid var(--border);background:rgba(148,163,184,.08);font-size:13px}
+    .hero-img{position:relative;border-radius:20px;overflow:hidden;border:1px solid var(--border);box-shadow:var(--shadow)}
+    .hero-img img{aspect-ratio:4/3;object-fit:cover}
+    .offer{position:absolute;bottom:14px;left:14px;background:rgba(15,23,42,.85);border:1px solid var(--border);padding:10px 12px;border-radius:12px}
+    .ribbon{margin-top:14px;padding:10px 12px;border:1px dashed var(--border);border-radius:12px;background:rgba(16,185,129,.08)}
+
+    /* Sections */
+    section{padding:60px 0;border-top:1px solid var(--border)}
+    h2{font-size:28px;margin:0 0 8px}
+    p.lead{color:var(--muted);margin:0 0 24px}
+
+    /* Grid & Cards */
+    .grid{display:grid;gap:18px}
+    .grid.cols-3{grid-template-columns:repeat(3,1fr)}
+    .grid.cols-2{grid-template-columns:repeat(2,1fr)}
+    .card{background:linear-gradient(180deg,var(--panel),#0b1426);border:1px solid var(--border);padding:18px;border-radius:var(--radius);box-shadow:var(--shadow)}
+    .card h3{margin:0 0 8px;font-size:18px}
+    .card p{margin:0;color:#cbd5e1}
+
+    /* Pricing */
+    .tabs{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px}
+    .tab{padding:8px 12px;border:1px solid var(--border);border-radius:999px;cursor:pointer;background:#0b1220}
+    .tab.active{background:linear-gradient(180deg,var(--brand-2),var(--brand));color:#001b2a;border-color:transparent}
+    .controls{display:flex;gap:10px;flex-wrap:wrap;margin:10px 0}
+    .pill{display:inline-flex;align-items:center;gap:8px;padding:8px 12px;border:1px solid var(--border);border-radius:999px;background:#0b1220}
+    .price-table{width:100%;border-collapse:separate;border-spacing:0 10px}
+    .price-table th,.price-table td{padding:12px 14px}
+    .price-table tr{background:linear-gradient(180deg,#0e1729,#0a1120);border:1px solid var(--border)}
+    .price-table tr td:first-child,.price-table tr th:first-child{border-top-left-radius:12px;border-bottom-left-radius:12px}
+    .price-table tr td:last-child,.price-table tr th:last-child{border-top-right-radius:12px;border-bottom-right-radius:12px}
+    .flag{font-size:12px;padding:4px 8px;border-radius:999px;border:1px solid var(--border)}
+    .save{color:#22d3ee;font-weight:700}
+    .highlight{font-weight:700;color:#10b981}
+
+    /* Bars (report demo) */
+    .bars{display:grid;gap:12px}
+    .bar{background:#0b1220;border-radius:12px;border:1px solid var(--border);overflow:hidden}
+    .bar .row{display:flex;justify-content:space-between;padding:10px 12px;color:#cbd5e1;font-size:14px}
+    .bar .track{height:10px;background:#0b1629}
+    .bar .fill{height:10px;background:linear-gradient(90deg,var(--brand-2),var(--brand))}
+
+    /* Footer */
+    footer{padding:30px 0;color:#a3b0c0;font-size:14px}
+
+    /* Responsive */
+    @media (max-width: 950px){
+      .hero-grid{grid-template-columns:1fr}
+      nav ul{display:none}
+      .mobile-toggle{display:inline-flex}
+      .grid.cols-3{grid-template-columns:1fr}
+      .grid.cols-2{grid-template-columns:1fr}
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="container nav">
+      <a href="#top" class="brand" aria-label="ISP Education Home">
+        <div class="logo" aria-hidden="true">🎓</div>
+        <span>ISP Education</span>
+      </a>
+      <nav>
+        <button class="btn ghost mobile-toggle" aria-label="Toggle menu" onclick="toggleMenu()">☰</button>
+        <ul id="menu">
+          <li><a href="#why">Why Us</a></li>
+          <li><a href="#pricing">Plans & Fees</a></li>
+          <li><a href="#method">Teaching Method</a></li>
+          <li><a href="#report">Parent Reports</a></li>
+          <li><a href="#demo" class="btn primary">Book Free Demo</a></li>
+        </ul>
+      </nav>
+    </div>
+  </header>
+
+  <main id="top">
+    <!-- Hero -->
+    <section class="hero">
+      <div class="container hero-grid">
+        <div>
+          <span class="badge">ICSE • CBSE • Karnataka • Classes 8–10</span>
+          <h1 class="title">Personalized Online Coaching that tracks <em>every concept</em></h1>
+          <p class="subtitle">We design a custom learning plan, teach with PPT-based visuals & real-life examples, and conduct same-day concept tests. Parents receive a <strong>weekly report</strong> showing strengths & focus areas.</p>
+          <div class="tagline">
+            <span class="tag">Concept-level monitoring</span>
+            <span class="tag">Weekly parent reports</span>
+            <span class="tag">Daily concept tests</span>
+            <span class="tag">Live online classes</span>
+          </div>
+          <div style="display:flex;gap:12px;flex-wrap:wrap">
+            <a href="#demo" class="btn primary">Book Free Demo</a>
+            <a href="#pricing" class="btn">View Fees</a>
+          </div>
+          <div class="ribbon">
+            🎉 Opening Offer: <strong>Now pay as low as ₹100/hr</strong> on monthly subject plans (vs ₹120/hr). On concept packs, go as low as <strong>₹60/hr</strong> (₹90 per concept)!
+          </div>
+        </div>
+        <div class="hero-img">
+          <img src="https://images.unsplash.com/photo-1606326608606-aa0b62935f59?q=80&w=1600&auto=format&fit=crop" alt="Modern online class with laptops" />
+          <div class="offer">
+            🎁 <strong>Laptop Offer:</strong> Eligible on <strong>plans that include Tests</strong> (see Combo & Crash Course). <span class="flag">T&C</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Why Us -->
+    <section id="why">
+      <div class="container">
+        <h2>Why choose ISP Education?</h2>
+        <p class="lead">Our model blends personalization, modern delivery, and transparent progress tracking.</p>
+        <div class="grid cols-3">
+          <div class="card"><h3>Personalized Plan</h3><p>We evaluate each student's level & personality to tailor the learning path.</p></div>
+          <div class="card"><h3>Concept-wise Tracking</h3><p>Every subject is split into concepts; we measure mastery of each one.</p></div>
+          <div class="card"><h3>Weekly Parent Report</h3><p>Parents see strengths & weak areas per concept—no guesswork.</p></div>
+          <div class="card"><h3>Modern Teaching</h3><p>PPT visuals & real-life examples make learning stick.</p></div>
+          <div class="card"><h3>Daily Concept Tests</h3><p>Short same-day tests ensure clarity before moving ahead.</p></div>
+          <div class="card"><h3>Flexible Schedules</h3><p>Weekday/Weekend batches to suit your routine.</p></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Pricing -->
+    <section id="pricing">
+      <div class="container">
+        <h2>Plans & Fees</h2>
+        <p class="lead">Pick subjects, choose batch, and see instant fees with discounts. <strong>Classes</strong> and <strong>Tests</strong> are priced separately; Combo plans include both.</p>
+
+        <!-- Subject chooser -->
+        <div class="card" style="margin-bottom:18px">
+          <h3 style="margin-top:0">Choose Subjects</h3>
+          <table class="price-table" aria-label="Subjects">
+            <thead>
+              <tr><th>Subject</th><th>Pick</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>Mathematics</td><td><input type="checkbox" class="choose" data-subject="Mathematics" /></td></tr>
+              <tr><td>Science</td><td><input type="checkbox" class="choose" data-subject="Science" /></td></tr>
+              <tr><td>Social</td><td><input type="checkbox" class="choose" data-subject="Social" /></td></tr>
+              <tr><td>English</td><td><input type="checkbox" class="choose" data-subject="English" /></td></tr>
+              <tr><td>Kannada</td><td><input type="checkbox" class="choose" data-subject="Kannada" /></td></tr>
+            </tbody>
+          </table>
+          <div class="controls">
+            <span class="pill">Selected: <strong id="selCount">0</strong></span>
+            <span id="laptopNote" class="flag">Laptop eligibility shows on Combo/Crash plans that include Tests.</span>
+          </div>
+        </div>
+
+        <!-- Tabs -->
+        <div class="tabs">
+          <button class="tab active" data-pane="classesPane">Coaching (Live Classes)</button>
+          <button class="tab" data-pane="testsPane">Tests (Only)</button>
+          <button class="tab" data-pane="comboPane">Combo (Classes + Tests)</button>
+          <button class="tab" data-pane="crashPane">6-Month Crash (3 Subjects)</button>
+          <button class="tab" data-pane="conceptPane">Customise by Concepts</button>
+        </div>
+
+        <!-- CLASSES ONLY -->
+        <div id="classesPane" class="card">
+          <div class="grid cols-2">
+            <div>
+              <h3 style="margin-top:0">Monthly (Per Subject)</h3>
+              <p class="lead">Weekday: <strong>15 hrs</strong> teaching/month • Weekend: <strong>36 hrs</strong> teaching/month</p>
+              <div class="controls">
+                <label class="pill">Batch:
+                  <select id="classBatch">
+                    <option value="weekday">Weekday</option>
+                    <option value="weekend">Weekend</option>
+                  </select>
+                </label>
+                <span class="pill">Rate: <strong>₹120/hr</strong></span>
+                <span class="pill">Offer: <span class="save">15% OFF</span> (5% + 10% Early Bird)</span>
+              </div>
+              <div class="controls">
+                <button class="btn primary" onclick="calcClasses()">Calculate Monthly Fee</button>
+              </div>
+              <div id="classesResult"></div>
+              <p class="small">Note: Coaching-only plans don’t include tests. Laptop offer applies only to plans that include tests.</p>
+            </div>
+            <div>
+              <img src="https://images.unsplash.com/photo-1588286840104-8957b019727f?q=80&w=1200&auto=format&fit=crop" alt="Online teaching" style="border-radius:16px;border:1px solid var(--border)" />
+            </div>
+          </div>
+        </div>
+
+        <!-- TESTS ONLY -->
+        <div id="testsPane" class="card" style="display:none">
+          <div class="grid cols-2">
+            <div>
+              <h3 style="margin-top:0">Monthly (Per Subject)</h3>
+              <p class="lead">Weekday: <strong>10 hrs</strong> tests/month • Weekend: <strong>24 hrs</strong> tests/month</p>
+              <div class="controls">
+                <label class="pill">Batch:
+                  <select id="testBatch">
+                    <option value="weekday">Weekday</option>
+                    <option value="weekend">Weekend</option>
+                  </select>
+                </label>
+                <span class="pill">Rate: <strong>₹120/hr</strong></span>
+              </div>
+              <div class="controls">
+                <button class="btn primary" onclick="calcTests()">Calculate Monthly Fee</button>
+              </div>
+              <div id="testsResult"></div>
+              <p class="small">Note: Tests-only plans are billed separately. Combine with classes for best results.</p>
+            </div>
+            <div>
+              <img src="https://images.unsplash.com/photo-1559067341-03b9b9078f74?q=80&w=1200&auto=format&fit=crop" alt="Online tests" style="border-radius:16px;border:1px solid var(--border)" />
+            </div>
+          </div>
+        </div>
+
+        <!-- COMBO -->
+        <div id="comboPane" class="card" style="display:none">
+          <div class="grid cols-2">
+            <div>
+              <h3 style="margin-top:0">Monthly Combo (Per Subject)</h3>
+              <p class="lead">
+                Weekday: <strong>15 hrs</strong> classes + <strong>10 hrs</strong> tests = <strong>25 hrs/subject</strong><br>
+                Weekend: <strong>36 hrs</strong> classes + <strong>24 hrs</strong> tests = <strong>60 hrs/subject</strong>
+              </p>
+              <div class="controls">
+                <label class="pill">Batch:
+                  <select id="comboBatch">
+                    <option value="weekday">Weekday</option>
+                    <option value="weekend">Weekend</option>
+                  </select>
+                </label>
+                <span class="pill">Rate: <strong>₹120/hr</strong></span>
+                <span class="pill">Discounts: <span class="save">15% OFF (1–2 subjects)</span> • <span class="save">30% OFF (3+ subjects)</span></span>
+              </div>
+              <div class="controls">
+                <button class="btn primary" onclick="calcCombo()">Calculate Monthly Fee</button>
+              </div>
+              <div id="comboResult"></div>
+              <p class="small">Laptop eligibility: <strong>Yes</strong> for Combo when you pick <strong>3+ subjects</strong> (includes Tests).</p>
+            </div>
+            <div>
+              <img src="https://images.unsplash.com/photo-1515879218367-8466d910aaa4?q=80&w=1200&auto=format&fit=crop" alt="Learning with laptop" style="border-radius:16px;border:1px solid var(--border)" />
+            </div>
+          </div>
+        </div>
+
+        <!-- CRASH COURSE -->
+        <div id="crashPane" class="card" style="display:none">
+          <div class="grid cols-2">
+            <div>
+              <h3 style="margin-top:0">6-Month Crash Course (Exactly 3 Subjects)</h3>
+              <p class="lead">Per month per subject: <strong>25 days</strong> × (<strong>3 hrs</strong> classes + <strong>2 hrs</strong> tests) = <strong>125 hrs</strong></p>
+              <ul>
+                <li>Total per subject for 6 months: <strong>750 hrs</strong></li>
+                <li>Total for 3 subjects: <strong>2250 hrs</strong></li>
+                <li>Rate: <strong>₹120/hr</strong></li>
+                <li>Discounts: <span class="save">20% Normal + 30% Early Bird = 50% OFF</span></li>
+                <li>Laptop: <strong>INCLUDED</strong> (includes Tests)</li>
+              </ul>
+              <div class="controls">
+                <button class="btn primary" onclick="calcCrash()">Calculate Full Fee</button>
+              </div>
+              <div id="crashResult"></div>
+            </div>
+            <div>
+              <img src="https://images.unsplash.com/photo-1587613865763-4b8b0b8561d8?q=80&w=1200&auto=format&fit=crop" alt="Focused crash course" style="border-radius:16px;border:1px solid var(--border)" />
+            </div>
+          </div>
+        </div>
+
+        <!-- CONCEPT CUSTOMISER -->
+        <div id="conceptPane" class="card" style="display:none">
+          <div class="grid cols-2">
+            <div>
+              <h3 style="margin-top:0">Customise by Concepts</h3>
+              <p class="lead">Pick only what you need. <strong>1 concept = 1.5 hrs teaching</strong>. Base: <strong>₹180/concept</strong> (₹120/hr)</p>
+              <div class="controls">
+                <label class="pill">Concepts:
+                  <input type="number" id="conceptCount" min="1" max="300" value="10" style="width:90px;margin-left:8px">
+                </label>
+                <span class="pill">Discount Slabs:
+                  <span class="flag">1–15: 0%</span>
+                  <span class="flag">16–30: 15%</span>
+                  <span class="flag">31–60: 25%</span>
+                  <span class="flag">61–150: 30%</span>
+                  <span class="flag">151–200: 40%</span>
+                  <span class="flag">201–300: 50%</span>
+                </span>
+              </div>
+              <div class="controls">
+                <button class="btn primary" onclick="calcConcepts()">Calculate Concept Pack</button>
+              </div>
+              <div id="conceptResult"></div>
+              <p class="small">Laptop offer doesn’t apply to teaching-only concept packs (no tests included).</p>
+            </div>
+            <div>
+              <img src="https://images.unsplash.com/photo-1601933470928-c1d20d77d8ed?q=80&w=1200&auto=format&fit=crop" alt="Concept based learning" style="border-radius:16px;border:1px solid var(--border)" />
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- Teaching Method -->
+    <section id="method">
+      <div class="container">
+        <h2>How we teach</h2>
+        <p class="lead">A simple and effective flow to build strong foundations.</p>
+        <div class="grid cols-3">
+          <div class="card"><h3>1) Diagnose</h3><p>Quick assessments to understand prior knowledge and learning style.</p></div>
+          <div class="card"><h3>2) Explain</h3><p>Live online classes using PPT-based visuals & real-life examples.</p></div>
+          <div class="card"><h3>3) Check</h3><p>Same-day concept tests to verify understanding immediately.</p></div>
+          <div class="card"><h3>4) Practise</h3><p>Targeted homework & doubt-solving sessions.</p></div>
+          <div class="card"><h3>5) Report</h3><p>Weekly parent report highlights strengths and weak concepts.</p></div>
+          <div class="card"><h3>6) Improve</h3><p>Adaptive revision plan based on performance trend.</p></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Parent Report -->
+    <section id="report">
+      <div class="container">
+        <h2>Weekly Parent Report (example)</h2>
+        <p class="lead">See exactly which concepts your child has mastered and which need support.</p>
+        <div class="grid cols-2">
+          <div class="card">
+            <div class="bars">
+              <div class="bar">
+                <div class="row"><span>Algebra → Linear Equations</span><strong>92%</strong></div>
+                <div class="track"><div class="fill" style="width:92%"></div></div>
+              </div>
+              <div class="bar">
+                <div class="row"><span>Geometry → Circles</span><strong>76%</strong></div>
+                <div class="track"><div class="fill" style="width:76%"></div></div>
+              </div>
+              <div class="bar">
+                <div class="row"><span>Chemistry → Chemical Bonding</span><strong>84%</strong></div>
+                <div class="track"><div class="fill" style="width:84%"></div></div>
+              </div>
+              <div class="bar">
+                <div class="row"><span>Physics → Electricity</span><strong>58%</strong></div>
+                <div class="track"><div class="fill" style="width:58%"></div></div>
+              </div>
+              <div class="bar">
+                <div class="row"><span>History → National Movement</span><strong>65%</strong></div>
+                <div class="track"><div class="fill" style="width:65%"></div></div>
+              </div>
+            </div>
+          </div>
+          <div class="card">
+            <h3 style="margin-top:0">What parents receive</h3>
+            <ul>
+              <li>Concept-wise scores and accuracy</li>
+              <li>Strengths & weak concepts clearly flagged</li>
+              <li>Recommendation for next week’s focus</li>
+              <li>Attendance & homework summary</li>
+              <li>Trend line across the month</li>
+            </ul>
+            <p class="small">Note: Actual report delivered weekly via email/WhatsApp. Parent portal coming soon.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Testimonials -->
+    <section id="testimonials">
+      <div class="container">
+        <h2>Parents & Students love us</h2>
+        <p class="lead">Real feedback from real families.</p>
+        <div class="grid cols-3">
+          <div class="card">
+            <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px">
+              <img class="avatar" alt="avatar" src="https://images.unsplash.com/photo-1544005313-94ddf0286df2?q=80&w=300&auto=format&fit=crop" style="width:40px;height:40px;border-radius:50%;border:1px solid var(--border)"/>
+              <div><strong>Anita (Parent)</strong><div class="small">Bengaluru • Class 10 CBSE</div></div>
+            </div>
+            <p>Weekly reports showed exactly where my son struggled. The targeted revision improved his Algebra scores in 3 weeks.</p>
+          </div>
+          <div class="card">
+            <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px">
+              <img class="avatar" alt="avatar" src="https://images.unsplash.com/photo-1607746882042-944635dfe10e?q=80&w=300&auto=format&fit=crop" style="width:40px;height:40px;border-radius:50%;border:1px solid var(--border)"/>
+              <div><strong>Rohan (Student)</strong><div class="small">Mysuru • Class 9 ICSE</div></div>
+            </div>
+            <p>The PPT examples made Physics easy. Same-day tests helped me fix mistakes quickly.</p>
+          </div>
+          <div class="card">
+            <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px">
+              <img class="avatar" alt="avatar" src="https://images.unsplash.com/photo-1556157382-97eda2d62296?q=80&w=300&auto=format&fit=crop" style="width:40px;height:40px;border-radius:50%;border:1px solid var(--border)"/>
+              <div><strong>Priya (Parent)</strong><div class="small">Hubballi • State Board</div></div>
+            </div>
+            <p>Loved the personalized plan. My daughter is more confident now in Science.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Demo / Contact Form -->
+    <section id="demo">
+      <div class="container">
+        <h2>Book your Free Demo Class</h2>
+        <p class="lead">Fill this form and we’ll confirm on WhatsApp.</p>
+        <div class="grid cols-2">
+          <div class="card">
+            <form id="contactForm">
+              <div>
+                <label for="name">Parent/Guardian Name</label>
+                <input id="name" name="name" placeholder="e.g., Kavitha" required />
+              </div>
+              <div>
+                <label for="phone">WhatsApp Number</label>
+                <input id="phone" name="phone" inputmode="tel" placeholder="e.g., 9XXXXXXXXX" required />
+              </div>
+              <div class="grid cols-2">
+                <div>
+                  <label for="student">Student Name</label>
+                  <input id="student" name="student" placeholder="e.g., Arjun" required />
+                </div>
+                <div>
+                  <label for="standard">Class</label>
+                  <select id="standard" name="standard" required>
+                    <option value="" disabled selected>Select</option>
+                    <option>8</option>
+                    <option>9</option>
+                    <option>10</option>
+                  </select>
+                </div>
+              </div>
+              <div class="grid cols-2">
+                <div>
+                  <label for="board">Syllabus</label>
+                  <select id="board" name="board" required>
+                    <option value="" disabled selected>Select</option>
+                    <option>ICSE</option>
+                    <option>CBSE</option>
+                    <option>Karnataka State</option>
+                  </select>
+                </div>
+                <div>
+                  <label for="city">City</label>
+                  <input id="city" name="city" placeholder="e.g., Bengaluru" />
+                </div>
+              </div>
+              <div>
+                <label>Subjects Interested</label>
+                <div class="controls" style="padding-top:6px">
+                  <label class="pill"><input type="checkbox" name="sMathematics" /> Mathematics</label>
+                  <label class="pill"><input type="checkbox" name="sScience" /> Science</label>
+                  <label class="pill"><input type="checkbox" name="sSocial" /> Social</label>
+                  <label class="pill"><input type="checkbox" name="sEnglish" /> English</label>
+                  <label class="pill"><input type="checkbox" name="sKannada" /> Kannada</label>
+                </div>
+              </div>
+              <div>
+                <label for="message">Anything we should know?</label>
+                <textarea id="message" name="message" rows="3" placeholder="Learning goals, preferred time, etc."></textarea>
+              </div>
+              <div style="display:flex;gap:12px;flex-wrap:wrap">
+                <button type="submit" class="btn primary">Submit & WhatsApp Us</button>
+                <a href="mailto:info@ispeducation.in" class="btn">Email Us</a>
+              </div>
+              <p class="small">By submitting, you agree to be contacted on WhatsApp/phone/email. We respect your privacy.</p>
+            </form>
+          </div>
+          <div class="card">
+            <h3 style="margin-top:0">Need help right now?</h3>
+            <p>Chat with our counsellor on WhatsApp:</p>
+            <p><a id="whatsLink" class="btn" href="#">Open WhatsApp</a></p>
+            <p class="small">Replace the phone number in the website code with your official counselling number to enable WhatsApp chat.</p>
+            <hr style="border-color:var(--border)" />
+            <h3>Address & Contact</h3>
+            <p>ISP Education (Online Coaching)<br/>Bengaluru, Karnataka, India</p>
+            <p>Email: <a href="mailto:info@ispeducation.in">info@ispeducation.in</a><br/>Phone/WhatsApp: <a href="#" id="displayPhone">+91 9XXXXXXXXX</a></p>
+            <p class="small">Service across India • ICSE • CBSE • Karnataka State Syllabus</p>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="container" style="display:flex;flex-wrap:wrap;gap:12px;align-items:center;justify-content:space-between">
+      <div>© <span id="year"></span> ISP Education. All rights reserved.</div>
+      <div class="small">Privacy • Terms • <a href="#demo">Contact</a></div>
+    </div>
+  </footer>
+
+  <!-- Structured Data -->
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "EducationalOrganization",
+    "name": "ISP Education",
+    "url": "https://ispeducation.in/",
+    "logo": "https://ispeducation.in/logo.png",
+    "address": {
+      "@type": "PostalAddress",
+      "addressLocality": "Bengaluru",
+      "addressRegion": "Karnataka",
+      "addressCountry": "IN"
+    },
+    "areaServed": "IN",
+    "contactPoint": {
+      "@type": "ContactPoint",
+      "contactType": "customer support",
+      "email": "info@ispeducation.in",
+      "telephone": "+91-9XXXXXXXXX"
+    }
+  }
+  </script>
+
+  <script>
+    // --- Mobile menu toggle ---
+    function toggleMenu(){
+      const menu = document.getElementById('menu');
+      menu.style.display = menu.style.display === 'flex' ? 'none' : 'flex';
+      if(menu.style.display === 'flex'){
+        menu.style.flexDirection = 'column';
+        menu.style.gap = '8px';
+        menu.style.marginTop = '10px';
+      }
+    }
+
+    // --- Global constants ---
+    const RATE_PER_HOUR = 120;
+    const HOURS = {
+      weekday: { classHrs: 15, testHrs: 10 },
+      weekend: { classHrs: 36, testHrs: 24 }
+    };
+
+    // --- Subjects selection ---
+    const chooseBoxes = () => Array.from(document.querySelectorAll('.choose'));
+    const selCountEl = document.getElementById('selCount');
+    function getSelectedSubjects(){
+      return chooseBoxes().filter(c=>c.checked).map(c=>c.dataset.subject);
+    }
+    function updateSubjectCount(){
+      selCountEl.textContent = getSelectedSubjects().length;
+    }
+    chooseBoxes().forEach(cb=>cb.addEventListener('change', updateSubjectCount));
+    updateSubjectCount();
+
+    // --- Tabs ---
+    const tabs = document.querySelectorAll('.tab');
+    tabs.forEach(t=>{
+      t.addEventListener('click', ()=>{
+        tabs.forEach(x=>x.classList.remove('active'));
+        t.classList.add('active');
+        ['classesPane','testsPane','comboPane','crashPane','conceptPane'].forEach(id=>{
+          document.getElementById(id).style.display = 'none';
+        });
+        document.getElementById(t.dataset.pane).style.display = 'block';
+      });
+    });
+
+    // --- Helpers ---
+    function money(n){ return '₹ ' + Math.round(n).toLocaleString('en-IN'); }
+    function htmlResult({title, base, discountPct, final, hoursTotal, effPerHour, notes=[], laptopEligible=false}){
+      const lines = [
+        `<h4 style="margin:.2rem 0">${title}</h4>`,
+        `<p class="small">Base Fee: <strong>${money(base)}</strong> ${discountPct?` • Discount: <strong class="save">${discountPct}%</strong>`:''}</p>`,
+        `<p>Final Payable: <strong>${money(final)}</strong> &nbsp; <span class="flag">Effective: <span class="highlight">${money(effPerHour)}/hr</span></span> &nbsp; <span class="small">Total hours counted: <strong>${hoursTotal}</strong></span></p>`,
+        laptopEligible ? `<p class="flag" style="border-color:rgba(16,185,129,.6)">🎁 Laptop Eligible</p>` : ``,
+        notes.length?`<ul class="small">${notes.map(n=>`<li>${n}</li>`).join('')}</ul>`:''
+      ];
+      return lines.join('');
+    }
+
+    // --- CLASSES ONLY calc ---
+    function calcClasses(){
+      const batch = document.getElementById('classBatch').value; // weekday/weekend
+      const count = getSelectedSubjects().length;
+      if(count === 0){ document.getElementById('classesResult').innerHTML = '<p class="small">Please select at least 1 subject above.</p>'; return; }
+
+      const hrsPerSub = HOURS[batch].classHrs; // teaching only
+      const totalHrs = hrsPerSub * count;
+      const base = totalHrs * RATE_PER_HOUR;
+
+      // Per-subject monthly discount: 15% (5% + 10% early bird)
+      const discountPct = 15;
+      const final = base * (1 - discountPct/100);
+      const effPerHour = final / totalHrs;
+
+      document.getElementById('classesResult').innerHTML = htmlResult({
+        title: `Coaching Only — ${batch==='weekday'?'Weekday':'Weekend'} Batch • ${count} Subject${count>1?'s':''}`,
+        base, discountPct, final, hoursTotal: totalHrs, effPerHour,
+        notes: [ 'Now you pay about ₹100/hr instead of ₹120/hr on monthly subject plans (approx.).',
+                 'Coaching plans do not include Tests. Laptop offer is not applicable here.' ]
+      });
+    }
+
+    // --- TESTS ONLY calc ---
+    function calcTests(){
+      const batch = document.getElementById('testBatch').value;
+      const count = getSelectedSubjects().length;
+      if(count === 0){ document.getElementById('testsResult').innerHTML = '<p class="small">Please select at least 1 subject above.</p>'; return; }
+
+      const hrsPerSub = HOURS[batch].testHrs; // tests only
+      const totalHrs = hrsPerSub * count;
+      const base = totalHrs * RATE_PER_HOUR;
+
+      const final = base; // no discount specified for tests-only
+      const effPerHour = final / totalHrs;
+
+      document.getElementById('testsResult').innerHTML = htmlResult({
+        title: `Tests Only — ${batch==='weekday'?'Weekday':'Weekend'} Batch • ${count} Subject${count>1?'s':''}`,
+        base, discountPct: 0, final, hoursTotal: totalHrs, effPerHour,
+        notes: [ 'Tests are billed separately from classes.',
+                 'Combine with Classes (Combo tab) for best value & laptop eligibility.' ]
+      });
+    }
+
+    // --- COMBO calc (classes + tests) ---
+    function calcCombo(){
+      const batch = document.getElementById('comboBatch').value;
+      const count = getSelectedSubjects().length;
+      if(count === 0){ document.getElementById('comboResult').innerHTML = '<p class="small">Please select at least 1 subject above.</p>'; return; }
+
+      const hrsClass = HOURS[batch].classHrs;
+      const hrsTest  = HOURS[batch].testHrs;
+      const hrsPerSub = hrsClass + hrsTest;
+      const totalHrs = hrsPerSub * count;
+      const base = totalHrs * RATE_PER_HOUR;
+
+      // Discounts: 15% for 1–2 subjects, 30% for 3+ subjects
+      const discountPct = count >= 3 ? 30 : 15;
+      const final = base * (1 - discountPct/100);
+      const effPerHour = final / totalHrs;
+
+      const laptopEligible = count >= 3; // Combo includes Tests & 3+ subjects
+
+      document.getElementById('comboResult').innerHTML = htmlResult({
+        title: `Combo (Classes + Tests) — ${batch==='weekday'?'Weekday':'Weekend'} • ${count} Subject${count>1?'s':''}`,
+        base, discountPct, final, hoursTotal: totalHrs, effPerHour,
+        notes: [
+          `Per subject hours this month: Classes ${hrsClass}h + Tests ${hrsTest}h = ${hrsPerSub}h`,
+          discountPct===30 ? 'Includes 10% normal + 20% early bird discount.' : 'Includes 5% normal + 10% early bird discount.'
+        ],
+        laptopEligible
+      });
+    }
+
+    // --- CRASH COURSE calc (6 months, exactly 3 subjects, includes tests) ---
+    function calcCrash(){
+      const count = getSelectedSubjects().length;
+      if(count !== 3){
+        document.getElementById('crashResult').innerHTML = '<p class="small">Please select exactly <strong>3 subjects</strong> above for this plan.</p>';
+        return;
+      }
+      const hrsPerSubPerMonth = 25 * (3 + 2); // 25 days * (3h classes + 2h tests)
+      const months = 6;
+      const hrsTotal = hrsPerSubPerMonth * months * 3; // 3 subjects
+      const base = hrsTotal * RATE_PER_HOUR;
+
+      const discountPct = 50; // 20% normal + 30% early bird
+      const final = base * 0.5;
+      const effPerHour = final / hrsTotal;
+
+      document.getElementById('crashResult').innerHTML = htmlResult({
+        title: `6-Month Crash • 3 Subjects (Classes + Tests)`,
+        base, discountPct, final, hoursTotal: hrsTotal, effPerHour,
+        notes: [ 'Daily schedule (Mon–Fri): 3h classes + 2h tests = 5h/day for 25 days each month.',
+                 'Laptop INCLUDED (plan includes Tests).' ],
+        laptopEligible: true
+      });
+    }
+
+    // --- CONCEPT PACK calc ---
+    function calcConcepts(){
+      const count = Math.max(1, Math.min(300, parseInt(document.getElementById('conceptCount').value || '1', 10)));
+      const basePerConcept = 180; // 1 concept = 1.5 hrs * ₹120/hr
+      let discountPct = 0;
+      if(count >= 16 && count <= 30) discountPct = 15;
+      else if(count >= 31 && count <= 60) discountPct = 25;
+      else if(count >= 61 && count <= 150) discountPct = 30;
+      else if(count >= 151 && count <= 200) discountPct = 40;
+      else if(count >= 201 && count <= 300) discountPct = 50;
+
+      const base = count * basePerConcept;
+      const final = base * (1 - discountPct/100);
+      const perConcept = final / count;
+      const perHour = perConcept / 1.5;
+
+      document.getElementById('conceptResult').innerHTML = `
+        <p>Selected: <strong>${count}</strong> concepts</p>
+        <p>Original: <strong>${money(base)}</strong> • Discount: <strong class="save">${discountPct}%</strong></p>
+        <p>Payable: <strong>${money(final)}</strong> &nbsp; <span class="flag">Effective: <span class="highlight">${money(perConcept)}/concept</span> (~${money(perHour)}/hr)</span></p>
+        <p class="small">Narration: Now pay as low as <strong>${money(perHour)}</strong> per hour instead of ₹120/hr on concept packs!</p>
+      `;
+    }
+
+    // --- Demo/Contact: WhatsApp ---
+    const WAPP_NUMBER = '919113550018'; // TODO: replace with your official WhatsApp number (digits only, include country code)
+    const displayPhone = document.getElementById('displayPhone');
+    displayPhone.textContent = '+ ' + WAPP_NUMBER.replace(/(\d{2})(\d{5})(\d{5})/, '+$1 $2 $3');
+
+    const whatsLink = document.getElementById('whatsLink');
+    whatsLink.href = 'https://wa.me/' + WAPP_NUMBER;
+
+    document.getElementById('contactForm').addEventListener('submit', function(e){
+      e.preventDefault();
+      const name = document.getElementById('name').value.trim();
+      const phone = document.getElementById('phone').value.trim();
+      const student = document.getElementById('student').value.trim();
+      const standard = document.getElementById('standard').value;
+      const board = document.getElementById('board').value;
+      const city = document.getElementById('city').value.trim();
+      const msg = document.getElementById('message').value.trim();
+
+      const s = [];
+      ['Mathematics','Science','Social','English','Kannada'].forEach(label=>{
+        const key = 's'+label;
+        if(document.querySelector(`[name="${key}"]`)?.checked){ s.push(label); }
+      });
+
+      const text = `Demo Request — ISP Education%0AParent: ${encodeURIComponent(name)}%0AWhatsApp: ${encodeURIComponent(phone)}%0AStudent: ${encodeURIComponent(student)}%0AClass: ${encodeURIComponent(standard)}%0ABoard: ${encodeURIComponent(board)}%0ACity: ${encodeURIComponent(city)}%0ASubjects: ${encodeURIComponent(s.join(', ') || 'Not specified')}%0ANote: ${encodeURIComponent(msg || '-')}`;
+      const url = 'https://wa.me/' + WAPP_NUMBER + '?text=' + text;
+      window.open(url, '_blank');
+
+      // Optional mail fallback
+      const mail = `mailto:info@ispeducation.in?subject=${encodeURIComponent('Free Demo Request – ISP Education')}&body=${text.replaceAll('%0A','%0D%0A')}`;
+      setTimeout(()=>{ window.location.href = mail; }, 400);
+    });
+
+    // --- Year ---
+    document.getElementById('year').textContent = new Date().getFullYear();
+  </script>
+</body>
+</html>
