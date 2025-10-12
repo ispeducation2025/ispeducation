@@ -1,15 +1,9 @@
 // src/pages/StudentDashboard.jsx
 import React, { useEffect, useMemo, useState } from "react";
 import { db, auth } from "../firebase/firebaseConfig";
-import { doc, getDoc } from "firebase/firestore";
+import { doc, getDoc, collection, getDocs, query, where } from "firebase/firestore";
 import { useNavigate } from "react-router-dom";
 import "./StudentDashboard.css";
-import { createClient } from "../dataconnect-generated"; // path to your generated SDK
-
-// Initialize DataConnect client
-const client = createClient({
-  environment: "development", // or "production" when deployed
-});
 
 // Subject images
 const subjectImages = {
@@ -25,7 +19,7 @@ const subjectImages = {
   Default: "https://cdn-icons-png.flaticon.com/512/747/747376.png",
 };
 
-const packageTypes = ["Interactive Class", "Test"]; // only two types
+const packageTypes = ["Interactive Class", "Test"];
 
 function unique(arr) {
   return [...new Set(arr.filter(Boolean))];
@@ -56,7 +50,6 @@ const isConceptPackageName = (name) => normalizeText(name) === "concept based pa
 
 const StudentDashboard = () => {
   const navigate = useNavigate();
-
   const [studentInfo, setStudentInfo] = useState({ name: "", classGrade: "", syllabus: "" });
   const [packages, setPackages] = useState([]);
   const [selectedType, setSelectedType] = useState("");
@@ -85,39 +78,19 @@ const StudentDashboard = () => {
     return () => unsub();
   }, [navigate]);
 
-  // Load packages via DataConnect (replaces Firestore fetching)
+  // Fetch packages from Firestore
   useEffect(() => {
+    if (!studentInfo.classGrade || !studentInfo.syllabus) return;
+
     const fetchPackages = async () => {
-      if (!studentInfo.classGrade || !studentInfo.syllabus) return;
-
-      try {
-        const response = await client.packages.list({
-          filter: {
-            classGrade: studentInfo.classGrade,
-            syllabus: studentInfo.syllabus,
-          },
-        });
-
-        const packagesList = response.map((p) => ({
-          id: p.id,
-          packageName: p.packageName,
-          packageType: p.packageType,
-          subject: p.subject,
-          subtopic: p.subtopic,
-          chapter: p.chapter,
-          concept: p.concept,
-          price: p.price,
-          totalPayable: p.totalPayable,
-          regularDiscount: p.regularDiscount,
-          additionalDiscount: p.additionalDiscount,
-          perHour: p.perHour,
-          duration: p.duration,
-        }));
-
-        setPackages(packagesList);
-      } catch (err) {
-        console.error("Error fetching packages:", err);
-      }
+      const q = query(
+        collection(db, "packages"),
+        where("classGrade", "==", studentInfo.classGrade),
+        where("syllabus", "==", studentInfo.syllabus)
+      );
+      const snapshot = await getDocs(q);
+      const list = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
+      setPackages(list);
     };
 
     fetchPackages();
@@ -160,7 +133,6 @@ const StudentDashboard = () => {
         : [],
     [filteredByPackageName, selectedSubject, selectedSubtopic, selectedPackageName]
   );
-
   // Cards list
   const conceptCards = useMemo(() => {
     if (!selectedPackageName) return [];
@@ -176,7 +148,7 @@ const StudentDashboard = () => {
     return filteredByPackageName;
   }, [filteredByPackageName, selectedPackageName, selectedSubject, selectedSubtopic, selectedChapter]);
 
-  // Cart
+  // Cart operations
   const addToCart = (pkg) => {
     if (!cart.find((p) => p.id === pkg.id)) setCart((c) => [...c, pkg]);
   };
@@ -189,7 +161,6 @@ const StudentDashboard = () => {
       alert("Cart is empty!");
       return;
     }
-
     const amountInPaise = cartTotal * 100;
 
     const options = {
@@ -212,9 +183,7 @@ const StudentDashboard = () => {
       notes: {
         cart: JSON.stringify(cart.map((c) => ({ id: c.id, name: c.packageName || c.concept }))),
       },
-      theme: {
-        color: "#1e90ff",
-      },
+      theme: { color: "#1e90ff" },
     };
 
     if (window.Razorpay) {
@@ -233,53 +202,26 @@ const StudentDashboard = () => {
   return (
     <div
       className="student-dashboard"
-      style={{
-        display: "flex",
-        gap: "20px",
-        minHeight: "100vh",
-        background: "linear-gradient(135deg, #1d2671, #c33764)",
-      }}
+      style={{ display: "flex", gap: "20px", minHeight: "100vh", background: "linear-gradient(135deg, #1d2671, #c33764)" }}
     >
       {/* Main Content */}
       <div style={{ flex: 3, padding: "20px" }}>
-        <div
-          className="dashboard-header"
-          style={{ display: "flex", justifyContent: "space-between", alignItems: "center", color: "#fff" }}
-        >
+        <div className="dashboard-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", color: "#fff" }}>
           <h1>Welcome, {studentInfo.name}!</h1>
           <button
             className="logout-btn"
             onClick={handleLogout}
-            style={{
-              background: "#ff4757",
-              color: "#fff",
-              border: "none",
-              padding: "8px 16px",
-              borderRadius: "6px",
-              cursor: "pointer",
-            }}
+            style={{ background: "#ff4757", color: "#fff", border: "none", padding: "8px 16px", borderRadius: "6px", cursor: "pointer" }}
           >
             Logout
           </button>
         </div>
 
         {/* Filters */}
-        <div
-          style={{
-            marginTop: "20px",
-            background: "#ffffff22",
-            padding: "15px",
-            borderRadius: "10px",
-            display: "grid",
-            gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
-            gap: "15px",
-          }}
-        >
+        <div style={{ marginTop: "20px", background: "#ffffff22", padding: "15px", borderRadius: "10px", display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: "15px" }}>
           {/* Package Type */}
           <div>
-            <label className="lbl" style={{ display: "block", marginBottom: "6px", color: "#fff" }}>
-              Package Type
-            </label>
+            <label className="lbl" style={{ display: "block", marginBottom: "6px", color: "#fff" }}>Package Type</label>
             <select
               className="sel"
               value={selectedType}
@@ -294,9 +236,7 @@ const StudentDashboard = () => {
             >
               <option value="">— Select Type —</option>
               {packageTypes.map((t) => (
-                <option key={t} value={t}>
-                  {t}
-                </option>
+                <option key={t} value={t}>{t}</option>
               ))}
             </select>
           </div>
@@ -304,9 +244,7 @@ const StudentDashboard = () => {
           {/* Package Name */}
           {selectedType && packageNameOptions.length > 0 && (
             <div>
-              <label className="lbl" style={{ display: "block", marginBottom: "6px", color: "#fff" }}>
-                Package Name
-              </label>
+              <label className="lbl" style={{ display: "block", marginBottom: "6px", color: "#fff" }}>Package Name</label>
               <select
                 className="sel"
                 value={selectedPackageName}
@@ -320,69 +258,46 @@ const StudentDashboard = () => {
               >
                 <option value="">— Select Package —</option>
                 {packageNameOptions.map((n) => (
-                  <option key={n} value={n}>
-                    {n}
-                  </option>
+                  <option key={n} value={n}>{n}</option>
                 ))}
               </select>
             </div>
           )}
 
-          {/* Extra filters for Concept Based Package */}
+          {/* Concept-based filters */}
           {isConceptPackageName(selectedPackageName) && subjectOptions.length > 0 && (
             <div>
-              <label className="lbl" style={{ display: "block", marginBottom: "6px", color: "#fff" }}>
-                Subject
-              </label>
+              <label className="lbl" style={{ display: "block", marginBottom: "6px", color: "#fff" }}>Subject</label>
               <select
                 className="sel"
                 value={selectedSubject}
-                onChange={(e) => {
-                  setSelectedSubject(e.target.value);
-                  setSelectedSubtopic("");
-                  setSelectedChapter("");
-                }}
+                onChange={(e) => { setSelectedSubject(e.target.value); setSelectedSubtopic(""); setSelectedChapter(""); }}
                 style={{ width: "100%", padding: "8px", borderRadius: "6px" }}
               >
                 <option value="">— Select Subject —</option>
-                {subjectOptions.map((s) => (
-                  <option key={s} value={s}>
-                    {s}
-                  </option>
-                ))}
+                {subjectOptions.map((s) => <option key={s} value={s}>{s}</option>)}
               </select>
             </div>
           )}
 
           {isConceptPackageName(selectedPackageName) && selectedSubject && subtopicOptions.length > 0 && (
             <div>
-              <label className="lbl" style={{ display: "block", marginBottom: "6px", color: "#fff" }}>
-                Subtopic
-              </label>
+              <label className="lbl" style={{ display: "block", marginBottom: "6px", color: "#fff" }}>Subtopic</label>
               <select
                 className="sel"
                 value={selectedSubtopic}
-                onChange={(e) => {
-                  setSelectedSubtopic(e.target.value);
-                  setSelectedChapter("");
-                }}
+                onChange={(e) => { setSelectedSubtopic(e.target.value); setSelectedChapter(""); }}
                 style={{ width: "100%", padding: "8px", borderRadius: "6px" }}
               >
                 <option value="">— Select Subtopic —</option>
-                {subtopicOptions.map((s) => (
-                  <option key={s} value={s}>
-                    {s}
-                  </option>
-                ))}
+                {subtopicOptions.map((s) => <option key={s} value={s}>{s}</option>)}
               </select>
             </div>
           )}
 
           {isConceptPackageName(selectedPackageName) && selectedSubtopic && chapterOptions.length > 0 && (
             <div>
-              <label className="lbl" style={{ display: "block", marginBottom: "6px", color: "#fff" }}>
-                Chapter
-              </label>
+              <label className="lbl" style={{ display: "block", marginBottom: "6px", color: "#fff" }}>Chapter</label>
               <select
                 className="sel"
                 value={selectedChapter}
@@ -390,16 +305,11 @@ const StudentDashboard = () => {
                 style={{ width: "100%", padding: "8px", borderRadius: "6px" }}
               >
                 <option value="">— Select Chapter —</option>
-                {chapterOptions.map((c) => (
-                  <option key={c} value={c}>
-                    {c}
-                  </option>
-                ))}
+                {chapterOptions.map((c) => <option key={c} value={c}>{c}</option>)}
               </select>
             </div>
           )}
         </div>
-
         {/* Cards */}
         {selectedPackageName && (
           <>
@@ -455,7 +365,8 @@ const StudentDashboard = () => {
                           {pkg.concept || pkg.packageName}
                         </h3>
                         <span style={{ display: "block", fontSize: "13px", marginBottom: "10px", color: "#555" }}>
-                          {pkg.subtopic ? pkg.subtopic + " → " : ""}{pkg.chapter}
+                          {pkg.subtopic ? pkg.subtopic + " → " : ""}
+                          {pkg.chapter}
                         </span>
 
                         {/* Price Section */}
