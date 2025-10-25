@@ -786,14 +786,35 @@ const SignInPage = () => {
           }
         }
 
-        /* Make inputs large on small screens */
-        @media (max-width: 480px) {
-          .signup-form input, .signup-form select {
-            padding: 12px;
-            font-size: 15px;
-          }
-          .image-box { height: 180px; }
-        }
+        /* Replace your existing .image-box and .image-box img rules with the following */
+
+/* container for each image */
+.image-box {
+  flex: 0 0 48%;
+  height: 320px;            /* desktop default */
+  border-radius: 15px;
+  overflow: hidden;
+  background: rgba(255,255,255,0.12);
+  box-shadow: 0 6px 18px rgba(0,0,0,0.12);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px;             /* give a little breathing room */
+  box-sizing: border-box;
+}
+
+/* make image fully visible without cropping */
+.image-box img {
+  max-width: 100%;
+  max-height: 100%;
+  width: auto;
+  height: auto;
+  object-fit: contain;      /* <-- important: prevents cropping */
+  display: block;
+  margin: 0 auto;
+  border-radius: 10px;
+}
+
 
       `}</style>
     </div>
