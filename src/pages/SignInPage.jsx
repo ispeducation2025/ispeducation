@@ -46,7 +46,7 @@ const SignInPage = () => {
   // Role selection modal on login
   const [showRoleModal, setShowRoleModal] = useState(false);
   const [loginUserData, setLoginUserData] = useState(null);
-  
+
   // --------- Helpers ---------
   const generateUniqueId = async (fullNameParam) => {
     const fullName =
@@ -85,79 +85,79 @@ const SignInPage = () => {
   };
 
   // --------- Email Sign Up ---------
-const handleEmailSignUp = async () => {
-  setError("");
+  const handleEmailSignUp = async () => {
+    setError("");
 
-  // Basic validation
-  if (!email || !password || !role) {
-    setError("Email, Password and Role are required.");
-    return;
-  }
-  if (!name) {
-    setError("Name is required.");
-    return;
-  }
-  if (role === "student") {
-    if (!classGrade) {
-      setError("Class is required for students.");
+    // Basic validation
+    if (!email || !password || !role) {
+      setError("Email, Password and Role are required.");
       return;
     }
-    if (!syllabus) {
-      setError("Syllabus is required for students.");
+    if (!name) {
+      setError("Name is required.");
       return;
     }
-  }
-  if (role === "promoter" || alsoPromoter) {
-    if (!phone || phone.trim().length < 8) {
-      setError("Valid phone number is required for promoters.");
-      return;
-    }
-    if (!businessArea || businessArea.trim() === "") {
-      setError("Business Area is required for promoters.");
-      return;
-    }
-  }
-
-  try {
-    const userCredential = await createUserWithEmailAndPassword(
-      auth,
-      email,
-      password
-    );
-    const user = userCredential.user;
-
-    const uniqueId = await generateUniqueId(name);
-
-    const userData = {
-      uid: user.uid,
-      uniqueId,
-      name,
-      email,
-      phone: phone || "",
-      role, // 'student' or 'promoter'
-      referralId: role === "student" ? referralId || null : null,
-      classGrade: role === "student" ? classGrade : null,
-      syllabus: role === "student" ? syllabus : null,
-      alsoPromoter,
-      promoterApproved: false,
-      businessArea: role === "promoter" || alsoPromoter ? businessArea : null, // added businessArea
-      createdAt: serverTimestamp(),
-    };
-
-    await setDoc(doc(db, "users", user.uid), userData);
-
-    alert(`Signup successful! Your Unique ID is ${uniqueId}`);
-
     if (role === "student") {
-      navigate("/student-dashboard");
-    } else {
-      alert("Promoter access is pending admin approval.");
+      if (!classGrade) {
+        setError("Class is required for students.");
+        return;
+      }
+      if (!syllabus) {
+        setError("Syllabus is required for students.");
+        return;
+      }
     }
-  } catch (err) {
-    console.error(err);
-    setError(err.message || "Error during signup.");
-  }
-};
+    if (role === "promoter" || alsoPromoter) {
+      if (!phone || phone.trim().length < 8) {
+        setError("Valid phone number is required for promoters.");
+        return;
+      }
+      if (!businessArea || businessArea.trim() === "") {
+        setError("Business Area is required for promoters.");
+        return;
+      }
+    }
+
+    try {
+      const userCredential = await createUserWithEmailAndPassword(
+        auth,
+        email,
+        password
+      );
+      const user = userCredential.user;
+
+      const uniqueId = await generateUniqueId(name);
+
+      const userData = {
+        uid: user.uid,
+        uniqueId,
+        name,
+        email,
+        phone: phone || "",
+        role, // 'student' or 'promoter'
+        referralId: role === "student" ? referralId || null : null,
+        classGrade: role === "student" ? classGrade : null,
+        syllabus: role === "student" ? syllabus : null,
+        alsoPromoter,
+        promoterApproved: false,
+        businessArea: role === "promoter" || alsoPromoter ? businessArea : null, // added businessArea
+        createdAt: serverTimestamp(),
+      };
+
+      await setDoc(doc(db, "users", user.uid), userData);
+
+      alert(`Signup successful! Your Unique ID is ${uniqueId}`);
+
+      if (role === "student") {
+        navigate("/student-dashboard");
+      } else {
+        alert("Promoter access is pending admin approval.");
+      }
+    } catch (err) {
+      console.error(err);
+      setError(err.message || "Error during signup.");
+    }
+  };
 
   // --------- Email Sign In ---------
   const handleEmailSignIn = async () => {
@@ -188,17 +188,17 @@ const handleEmailSignUp = async () => {
       console.log("Fetched userData:", userData);
 
       // Case 1: User is student but also promoter
-if (userData.alsoPromoter === true) {
-  if (userData.promoterApproved) {
-    setLoginUserData(userData);
-    setShowRoleModal(true);
-    return;
-  } else {
-    alert("Promoter access pending admin approval. Logging in as Student.");
-    navigate("/student-dashboard");
-    return;
-  }
-}
+      if (userData.alsoPromoter === true) {
+        if (userData.promoterApproved) {
+          setLoginUserData(userData);
+          setShowRoleModal(true);
+          return;
+        } else {
+          alert("Promoter access pending admin approval. Logging in as Student.");
+          navigate("/student-dashboard");
+          return;
+        }
+      }
 
       // Case 2: Pure promoter
       if (userData.role === "promoter") {
@@ -327,18 +327,17 @@ if (userData.alsoPromoter === true) {
       }
 
       // Case 1: User is student but also promoter
-if (finalData.alsoPromoter === true) {
-  if (finalData.promoterApproved) {
-    setLoginUserData(finalData);
-    setShowRoleModal(true);
-    return;
-  } else {
-    alert("Promoter access pending admin approval. Logging in as Student.");
-    navigate("/student-dashboard");
-    return;
-  }
-}
-
+      if (finalData.alsoPromoter === true) {
+        if (finalData.promoterApproved) {
+          setLoginUserData(finalData);
+          setShowRoleModal(true);
+          return;
+        } else {
+          alert("Promoter access pending admin approval. Logging in as Student.");
+          navigate("/student-dashboard");
+          return;
+        }
+      }
 
       // Case 2: Pure promoter
       if (finalData.role === "promoter") {
@@ -362,12 +361,13 @@ if (finalData.alsoPromoter === true) {
 
   // --------- UI ---------
   return (
-    <div className="signin-page">
-      <div className="left-panel">
+    <div className="signin-page" aria-live="polite">
+      {/* NOTE: For mobile we want the form first. This is handled in CSS media queries below. */}
+      <div className="left-panel" aria-hidden={false}>
         <h1>Welcome to ISP Education</h1>
         <p>"Empower Yourself with Online & Offline Learning Excellence"</p>
 
-        <div className="images-row">
+        <div className="images-row" role="presentation">
           <div className="image-box">
             <img src={coachingImg} alt="Coaching" />
           </div>
@@ -407,7 +407,7 @@ if (finalData.alsoPromoter === true) {
         </div>
       </div>
 
-      <div className="right-panel">
+      <div className="right-panel" role="region" aria-label="Sign in form">
         <div className="form-card">
           <div style={{ textAlign: "center", marginBottom: "15px" }}>
             <img
@@ -429,6 +429,7 @@ if (finalData.alsoPromoter === true) {
                   value={name}
                   onChange={(e) => setName(e.target.value)}
                   required
+                  aria-label="Full Name"
                 />
                 <input
                   type="tel"
@@ -436,21 +437,24 @@ if (finalData.alsoPromoter === true) {
                   value={phone}
                   onChange={(e) => setPhone(e.target.value)}
                   required={role === "promoter" || alsoPromoter}
+                  aria-label="Phone number"
                 />
                 {/* Business Area for Promoter */}
-    {(role === "promoter" || alsoPromoter) && (
-      <input
-        type="text"
-        placeholder="Business Area / Region"
-        value={businessArea}
-        onChange={(e) => setBusinessArea(e.target.value)}
-        required
-      />
-    )}
+                {(role === "promoter" || alsoPromoter) && (
+                  <input
+                    type="text"
+                    placeholder="Business Area / Region"
+                    value={businessArea}
+                    onChange={(e) => setBusinessArea(e.target.value)}
+                    required
+                    aria-label="Business Area"
+                  />
+                )}
                 <select
                   value={role}
                   onChange={(e) => setRole(e.target.value)}
                   required
+                  aria-label="Select Role"
                 >
                   <option value="">Select Role</option>
                   <option value="student">Student</option>
@@ -476,6 +480,7 @@ if (finalData.alsoPromoter === true) {
                   type="checkbox"
                   checked={alsoPromoter}
                   onChange={(e) => setAlsoPromoter(e.target.checked)}
+                  aria-label="Also register as promoter"
                 />
                 Also register as Promoter
               </label>
@@ -488,6 +493,7 @@ if (finalData.alsoPromoter === true) {
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               required
+              aria-label="Email"
             />
             <input
               type="password"
@@ -495,6 +501,7 @@ if (finalData.alsoPromoter === true) {
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               required
+              aria-label="Password"
             />
 
             {/* Student-only more fields on Sign Up */}
@@ -504,6 +511,7 @@ if (finalData.alsoPromoter === true) {
                   value={classGrade}
                   onChange={(e) => setClassGrade(e.target.value)}
                   required
+                  aria-label="Class Grade"
                 >
                   <option value="">Select Class</option>
                   <option value="6th">6th</option>
@@ -518,6 +526,7 @@ if (finalData.alsoPromoter === true) {
                   value={syllabus}
                   onChange={(e) => setSyllabus(e.target.value)}
                   required
+                  aria-label="Syllabus"
                 >
                   <option value="">Select Syllabus</option>
                   <option value="ICSE">ICSE</option>
@@ -530,6 +539,7 @@ if (finalData.alsoPromoter === true) {
                   placeholder="Referral ID (Optional)"
                   value={referralId}
                   onChange={(e) => setReferralId(e.target.value)}
+                  aria-label="Referral ID"
                 />
               </>
             )}
@@ -565,14 +575,14 @@ if (finalData.alsoPromoter === true) {
                 : "Don't have an account? Sign Up"}
             </p>
 
-            {error && <p className="signup-error">{error}</p>}
+            {error && <p className="signup-error" role="alert">{error}</p>}
           </div>
         </div>
       </div>
 
       {/* Role Modal for student who is also promoter */}
       {showRoleModal && (
-        <div className="role-modal">
+        <div className="role-modal" role="dialog" aria-modal="true">
           <div className="role-modal-card">
             <h3>Select Role to Login</h3>
             <button onClick={() => handleRoleSelect("student")}>Student</button>
@@ -590,7 +600,12 @@ if (finalData.alsoPromoter === true) {
           font-family: Arial, sans-serif;
           height: 100vh;
           overflow: hidden;
+          gap: 18px;
+          padding: 18px;
+          box-sizing: border-box;
         }
+
+        /* Left panel (visual / info) */
         .left-panel {
           flex: 1;
           background: linear-gradient(135deg, #ff416c, #ff4b2b, #ff6a00, #f9d423, #24c6dc, #514a9d, #6a11cb, #2575fc);
@@ -604,6 +619,7 @@ if (finalData.alsoPromoter === true) {
           justify-content: flex-start;
           align-items: center;
           overflow-y: auto;
+          border-radius: 12px;
         }
         @keyframes gradientBG {
           0% { background-position: 0% 50%; }
@@ -636,6 +652,7 @@ if (finalData.alsoPromoter === true) {
           gap: 15px;
           align-items: flex-start;
           margin-top: 18px;
+          width: 100%;
         }
         .about-section { flex: 2; }
         .founder-section {
@@ -652,23 +669,25 @@ if (finalData.alsoPromoter === true) {
           font-size: 13px;
           text-align: center;
         }
+
+        /* Right panel (form) */
         .right-panel {
-          width: 30%;
-          max-width: 380px;
-          min-width: 280px;
-          background: linear-gradient(135deg, #0f2027, #203a43, #2c5364);
+          width: 38%;
+          max-width: 420px;
+          min-width: 300px;
           display: flex;
           justify-content: center;
           align-items: center;
           padding: 20px;
-          border-radius: 15px;
+          border-radius: 12px;
+          background: linear-gradient(135deg, rgba(15,32,39,0.95), rgba(32,58,67,0.95));
         }
         .form-card {
           width: 100%;
           background: linear-gradient(135deg, #ffdde1, #9cdfeeff);
           padding: 25px 20px;
-          border-radius: 20px;
-          box-shadow: 0 8px 25px rgba(105, 250, 255, 0.4);
+          border-radius: 12px;
+          box-shadow: 0 8px 25px rgba(105, 250, 255, 0.12);
           display: flex;
           flex-direction: column;
           align-items: stretch;
@@ -679,10 +698,11 @@ if (finalData.alsoPromoter === true) {
           gap: 10px;
         }
         .signup-form input, .signup-form select {
-          padding: 8px;
-          font-size: 13px;
+          padding: 10px;
+          font-size: 14px;
           border: 1px solid #ccc;
           border-radius: 8px;
+          box-sizing: border-box;
         }
         .signup-btn {
           padding: 10px;
@@ -694,7 +714,7 @@ if (finalData.alsoPromoter === true) {
           font-weight: bold;
           transition: all 0.2s;
         }
-        .signup-btn:hover { background: #ff69b4; }
+        .signup-btn:hover { transform: translateY(-1px); }
         .google-btn { background: #4285f4; margin-top: 5px; }
         .signup-error { color: red; font-size: 12px; margin-top: 5px; text-align: center; }
 
@@ -731,21 +751,50 @@ if (finalData.alsoPromoter === true) {
         }
         .role-modal-card button:first-of-type { background: #0d6efd; color: #fff; }
         .role-modal-card button:last-of-type { background: #28a745; color: #fff; }
-        .role-modal-card button:hover { opacity: 0.9; }
+        .role-modal-card button:hover { opacity: 0.95; }
 
+        /* Responsive: stack vertically on smaller screens
+           and show the FORM first (so easier to access on phones) */
         @media (max-width: 1100px) {
           .signin-page {
-            flex-direction: column;
-            justify-content: center;
-            align-items: center;
+            flex-direction: column-reverse; /* form (right-panel) will appear first */
+            align-items: stretch;
+            height: auto;
+            overflow: visible;
+            padding: 12px;
           }
           .left-panel, .right-panel {
-            width: 90%;
-            max-width: 500px;
-            border-radius: 15px;
-            margin: 15px 0;
+            width: 100%;
+            max-width: 100%;
+            min-width: 0;
+            border-radius: 12px;
+            margin: 8px 0;
+          }
+          .right-panel {
+            order: -1; /* ensure right-panel is placed first visually (just in case) */
+            padding: 14px;
+            background: transparent;
+          }
+          .form-card {
+            padding: 18px;
+          }
+          .images-row .image-box {
+            height: 220px;
+          }
+          .about-founder {
+            flex-direction: column;
           }
         }
+
+        /* Make inputs large on small screens */
+        @media (max-width: 480px) {
+          .signup-form input, .signup-form select {
+            padding: 12px;
+            font-size: 15px;
+          }
+          .image-box { height: 180px; }
+        }
+
       `}</style>
     </div>
   );
