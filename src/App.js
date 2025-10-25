@@ -1,6 +1,6 @@
 // src/App.js
 import React from "react";
-import { BrowserRouter as Router, Routes, Route, Link } from "react-router-dom";
+import { BrowserRouter as Router, Routes, Route, Link, useLocation } from "react-router-dom";
 import SignInPage from "./pages/SignInPage";
 import StudentDashboard from "./pages/StudentDashboard";
 import PromoterDashboard from "./pages/PromoterDashboard";
@@ -16,30 +16,46 @@ import Refund from "./pages/Refund";
 import Shipping from "./pages/Shipping";
 import Contact from "./pages/Contact";
 
-function App() {
+function Layout() {
+  const location = useLocation();
+
+  // ✅ Hide footer policies on dashboards only
+  const hideFooterRoutes = [
+    "/student-dashboard",
+    "/promoter-dashboard",
+    "/admin-dashboard",
+    "/approve-promoter",
+    "/promoter-database",
+    "/student-database",
+  ];
+
+  const shouldShowFooter = !hideFooterRoutes.some((path) =>
+    location.pathname.includes(path)
+  );
+
   return (
-    <Router>
-      <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column" }}>
-        <div style={{ flex: 1 }}>
-          <Routes>
-            <Route path="/" element={<SignInPage />} />
-            <Route path="/student-dashboard" element={<StudentDashboard />} />
-            <Route path="/promoter-dashboard" element={<PromoterDashboard />} />
-            <Route path="/admin-dashboard" element={<AdminDashboard />} />
-            <Route path="/approve-promoter" element={<ApprovePromoter />} />
-            <Route path="/promoter-database" element={<PromoterDatabase />} />
-            <Route path="/student-database" element={<StudentDatabase />} />
+    <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column" }}>
+      <div style={{ flex: 1 }}>
+        <Routes>
+          <Route path="/" element={<SignInPage />} />
+          <Route path="/student-dashboard" element={<StudentDashboard />} />
+          <Route path="/promoter-dashboard" element={<PromoterDashboard />} />
+          <Route path="/admin-dashboard" element={<AdminDashboard />} />
+          <Route path="/approve-promoter" element={<ApprovePromoter />} />
+          <Route path="/promoter-database" element={<PromoterDatabase />} />
+          <Route path="/student-database" element={<StudentDatabase />} />
 
-            {/* Policy Routes */}
-            <Route path="/terms" element={<Terms />} />
-            <Route path="/privacy" element={<Privacy />} />
-            <Route path="/refund" element={<Refund />} />
-            <Route path="/shipping" element={<Shipping />} />
-            <Route path="/contact" element={<Contact />} />
-          </Routes>
-        </div>
+          {/* Policy Routes */}
+          <Route path="/terms" element={<Terms />} />
+          <Route path="/privacy" element={<Privacy />} />
+          <Route path="/refund" element={<Refund />} />
+          <Route path="/shipping" element={<Shipping />} />
+          <Route path="/contact" element={<Contact />} />
+        </Routes>
+      </div>
 
-        {/* Footer */}
+      {/* ✅ Footer Policies — hidden on dashboards */}
+      {shouldShowFooter && (
         <footer
           style={{
             background: "#1e1e1e",
@@ -68,7 +84,15 @@ function App() {
             Contact Us
           </Link>
         </footer>
-      </div>
+      )}
+    </div>
+  );
+}
+
+function App() {
+  return (
+    <Router>
+      <Layout />
     </Router>
   );
 }
