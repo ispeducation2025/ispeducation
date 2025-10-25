@@ -1,7 +1,7 @@
 // src/pages/StudentDashboard.jsx
 import React, { useEffect, useMemo, useState } from "react";
 import { db, auth } from "../firebase/firebaseConfig";
-import { doc, getDoc, collection, getDocs, query, where } from "firebase/firestore";
+import { doc, getDoc, collection, getDocs, query, where, addDoc } from "firebase/firestore";
 import { useNavigate } from "react-router-dom";
 import "./StudentDashboard.css";
 
@@ -58,6 +58,17 @@ const StudentDashboard = () => {
   const [selectedSubtopic, setSelectedSubtopic] = useState("");
   const [selectedChapter, setSelectedChapter] = useState("");
   const [cart, setCart] = useState([]);
+
+  // Load Razorpay dynamically (Option B)
+  useEffect(() => {
+    const script = document.createElement("script");
+    script.src = "https://checkout.razorpay.com/v1/checkout.js";
+    script.async = true;
+    document.body.appendChild(script);
+    return () => {
+      document.body.removeChild(script);
+    };
+  }, []);
 
   // Auth check
   useEffect(() => {
@@ -133,6 +144,7 @@ const StudentDashboard = () => {
         : [],
     [filteredByPackageName, selectedSubject, selectedSubtopic, selectedPackageName]
   );
+
   // Cards list
   const conceptCards = useMemo(() => {
     if (!selectedPackageName) return [];
@@ -164,16 +176,28 @@ const StudentDashboard = () => {
     const amountInPaise = cartTotal * 100;
 
     const options = {
-      key: "rzp_test_YOUR_TEST_KEY", // Replace with your Razorpay Test Key
+      key: "rzp_live_RXgt3NNJiZJDob", // <-- Replace with your live Razorpay key
       amount: amountInPaise,
       currency: "INR",
       name: "ISP Education",
       description: "Course Payment",
       image: "https://ispeducation.in/logo192.png",
-      handler: function (response) {
+      handler: async function (response) {
         alert("Payment successful! Payment ID: " + response.razorpay_payment_id);
+        // Save payment details in Firestore
+        const paymentsRef = collection(db, "payments");
+        for (const pkg of cart) {
+          await addDoc(paymentsRef, {
+            studentId: auth.currentUser.uid,
+            packageId: pkg.id,
+            packageName: pkg.packageName || pkg.concept,
+            subject: pkg.subject || "",
+            amount: pkg.totalPayable || pkg.price,
+            paymentId: response.razorpay_payment_id,
+            createdAt: new Date(),
+          });
+        }
         setCart([]);
-        // TODO: Save payment details in Firebase
       },
       prefill: {
         name: studentInfo.name,
@@ -310,6 +334,7 @@ const StudentDashboard = () => {
             </div>
           )}
         </div>
+
         {/* Cards */}
         {selectedPackageName && (
           <>
@@ -345,28 +370,35 @@ const StudentDashboard = () => {
                   return (
                     <div
                       key={pkg.id}
-                      className="zoom-card"
+                      className={`zoom-card card-${subj.toLowerCase().replace(/\s+/g,'') || "default"}`}
                       style={{
-                        background: "#fff",
                         borderRadius: "12px",
                         padding: "15px",
                         color: "#333",
-                        boxShadow: "0 4px 10px rgba(0,0,0,0.15)",
                         fontSize: "14px",
+                        boxShadow: "0 6px 20px rgba(0,0,0,0.3)",
+                        background: "#fff",
+                        transition: "transform 0.2s, box-shadow 0.2s",
                       }}
                     >
                       <div className="zoom-card-inner" style={{ textAlign: "center" }}>
                         <img
                           src={subjectImages[subj] || subjectImages.Default}
                           alt={subj}
-                          style={{ width: "50px", marginBottom: "8px" }}
+                          style={{
+                            width: "80px",
+                            height: "80px",
+                            objectFit: "contain",
+                            marginBottom: "8px",
+                            borderRadius: "10px",
+                            backgroundColor: "rgba(255,255,255,0.05)",
+                          }}
                         />
                         <h3 style={{ fontSize: "16px", fontWeight: "600", color: "#222", marginBottom: "4px" }}>
                           {pkg.concept || pkg.packageName}
                         </h3>
                         <span style={{ display: "block", fontSize: "13px", marginBottom: "10px", color: "#555" }}>
-                          {pkg.subtopic ? pkg.subtopic + " → " : ""}
-                          {pkg.chapter}
+                          {subj} {pkg.subtopic ? "→ " + pkg.subtopic + " → " : ""}{pkg.chapter}
                         </span>
 
                         {/* Price Section */}
@@ -427,46 +459,52 @@ const StudentDashboard = () => {
           alignSelf: "start",
         }}
       >
-        <h2 style={{ color: "#fff", marginBottom: "10px" }}>Cart ({cart.length})</h2>
+        <h2 style={{ color: "#fff", marginBottom: "15px" }}>Cart</h2>
         {cart.length === 0 ? (
-          <p style={{ color: "#fff" }}>Your cart is empty.</p>
+          <p style={{ color: "#fff" }}>Cart is empty</p>
         ) : (
           <>
             <ul style={{ listStyle: "none", padding: 0 }}>
-              {cart.map((c) => (
-                <li key={c.id} style={{ marginBottom: "10px", color: "#fff" }}>
-                  {c.concept || c.packageName} - ₹{c.totalPayable || c.price}
+              {cart.map((pkg) => (
+                <li
+                  key={pkg.id}
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    marginBottom: "10px",
+                    color: "#fff",
+                  }}
+                >
+                  <span>{pkg.packageName || pkg.concept}</span>
+                  <span>₹{parseFloat(pkg.totalPayable || pkg.price || 0).toFixed(2)}</span>
                   <button
-                    onClick={() => removeFromCart(c.id)}
+                    onClick={() => removeFromCart(pkg.id)}
                     style={{
                       marginLeft: "10px",
-                      background: "#ff4757",
-                      color: "#fff",
+                      background: "transparent",
                       border: "none",
-                      borderRadius: "4px",
-                      padding: "2px 6px",
+                      color: "#ff4757",
                       cursor: "pointer",
                     }}
                   >
-                    X
+                    ✕
                   </button>
                 </li>
               ))}
             </ul>
-            <hr style={{ margin: "10px 0", borderColor: "#fff44" }} />
-            <p style={{ color: "#fff", fontWeight: "bold" }}>Total: ₹{cartTotal.toFixed(2)}</p>
+            <p style={{ color: "#fff", fontWeight: "600" }}>Total: ₹{cartTotal.toFixed(2)}</p>
             <button
               onClick={handleCheckout}
               style={{
                 marginTop: "10px",
-                padding: "10px 20px",
+                padding: "10px",
                 width: "100%",
                 background: "#2ed573",
+                color: "#fff",
                 border: "none",
                 borderRadius: "6px",
                 cursor: "pointer",
-                color: "#fff",
-                fontWeight: "bold",
+                fontWeight: "600",
               }}
             >
               Checkout
