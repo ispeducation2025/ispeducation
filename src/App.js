@@ -16,6 +16,9 @@ import Refund from "./pages/Refund";
 import Shipping from "./pages/Shipping";
 import Contact from "./pages/Contact";
 
+// Firestore Debug Page
+import FirestoreDebug from "./pages/FirestoreDebug";
+
 function Layout() {
   const location = useLocation();
 
@@ -51,6 +54,9 @@ function Layout() {
           <Route path="/refund" element={<Refund />} />
           <Route path="/shipping" element={<Shipping />} />
           <Route path="/contact" element={<Contact />} />
+
+          {/* 🔹 Firestore Debug */}
+          <Route path="/debug" element={<FirestoreDebug />} />
         </Routes>
       </div>
 

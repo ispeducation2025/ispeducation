@@ -1,0 +1,68 @@
+.promoter-database-container {
+  display: flex;
+  gap: 1rem;
+  padding: 1rem;
+}
+
+.promoter-table-section {
+  flex: 2;
+  overflow-x: auto;
+}
+
+.promoter-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.promoter-table th,
+.promoter-table td {
+  border: 1px solid #ccc;
+  padding: 8px;
+  text-align: left;
+}
+
+.promoter-table th {
+  background-color: #f4f4f4;
+}
+
+.promoter-table tr:hover {
+  background-color: #eaf3ff;
+  cursor: pointer;
+}
+
+.selected-row {
+  background-color: #d1e3ff;
+}
+
+.promoter-detail-panel {
+  flex: 1;
+  border: 1px solid #ccc;
+  padding: 1rem;
+  border-radius: 8px;
+  background: #f9f9f9;
+}
+
+.pay-btn {
+  padding: 5px 10px;
+  background-color: #007bff;
+  color: white;
+  border: none;
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.pay-btn:hover {
+  background-color: #0056b3;
+}
+
+.pay-btn-full {
+  width: 100%;
+  padding: 10px;
+  background-color: #007bff;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  margin-top: 10px;
+}

@@ -1,198 +1,240 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useRef } from "react";
 import { db } from "../firebase/firebaseConfig";
-import { collection, getDocs, query, where } from "firebase/firestore";
+import { collection, getDocs } from "firebase/firestore";
 import { useNavigate } from "react-router-dom";
 
-export default function PromoterDatabase() {
+const PromoterDatabase = () => {
   const [promoters, setPromoters] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [selectedPromoter, setSelectedPromoter] = useState(null);
+  const panelRef = useRef(null);
   const navigate = useNavigate();
 
+  // ✅ Fetch promoter data
   useEffect(() => {
     const fetchPromoters = async () => {
       try {
-        const promoterQ = query(
-          collection(db, "users"),
-          where("alsoPromoter", "==", true),
-          where("promoterApproved", "==", true)
-        );
-        const promoterSnap = await getDocs(promoterQ);
+        const promoterCollection = collection(db, "users");
+        const snapshot = await getDocs(promoterCollection);
 
-        const promoterData = [];
-
-        for (let docSnap of promoterSnap.docs) {
-          const promoter = { id: docSnap.id, ...docSnap.data() };
-
-          const studentQ = query(
-            collection(db, "users"),
-            where("referralId", "==", promoter.uniqueId)
-          );
-          const studentSnap = await getDocs(studentQ);
-          const students = studentSnap.docs.map(d => d.data());
-
-          const totalCommission = students.reduce(
-            (acc, s) => acc + (parseFloat(s.commissionEarned) || 0),
-            0
+        const promoterList = snapshot.docs
+          .map((doc) => ({ id: doc.id, ...doc.data() }))
+          .filter(
+            (p) => p.role === "promoter" || p.alsoPromoter === true
           );
 
-          promoter.totalCommission = totalCommission.toFixed(2);
-          promoterData.push(promoter);
-        }
-
-        setPromoters(promoterData);
+        setPromoters(promoterList);
       } catch (error) {
         console.error("Error fetching promoters:", error);
-      } finally {
-        setLoading(false);
       }
     };
-
     fetchPromoters();
   }, []);
 
-  if (loading)
-    return (
-      <p style={{ textAlign: "center", marginTop: 40, fontSize: 18, fontWeight: 600, color: "#333" }}>
-        Loading promoters...
-      </p>
-    );
+  // ✅ Close panel on outside click
+  useEffect(() => {
+    const handleClickOutside = (e) => {
+      if (panelRef.current && !panelRef.current.contains(e.target)) {
+        setSelectedPromoter(null);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
 
   const tableStyle = {
     width: "100%",
     borderCollapse: "collapse",
-    borderRadius: 12,
-    overflow: "hidden",
-    backgroundColor: "#fff",
-    boxShadow: "0 8px 24px rgba(0,0,0,0.1)"
+    marginTop: "15px",
+    fontSize: "14px",
   };
 
-  const thStyle = {
-    padding: "14px 18px",
-    color: "#fff",
-    fontWeight: 700,
-    fontSize: 14,
+  const thtdStyle = {
+    border: "1px solid #ddd",
+    padding: "8px 10px",
     textAlign: "left",
-    borderBottom: "2px solid #fff",
-    background: "linear-gradient(90deg, #4F46E5, #8B5CF6)"
   };
 
-  const thRightStyle = { ...thStyle, textAlign: "right" }; // Right-align for Commission
-
-  const tdStyle = {
-    padding: "12px 18px",
-    borderBottom: "1px solid #E5E7EB",
-    fontSize: 14
-  };
-
-  const badgeStyle = {
-    display: "inline-block",
-    padding: "4px 12px",
-    borderRadius: 12,
-    backgroundColor: "#34D399",
-    color: "#065F46",
-    fontWeight: 600,
-    fontSize: 12
-  };
-
-  const buttonStyle = {
-    marginBottom: 32,
-    padding: "10px 20px",
-    backgroundColor: "#4F46E5",
-    color: "#fff",
-    fontWeight: 600,
-    border: "none",
-    borderRadius: 6,
-    cursor: "pointer",
-    transition: "background-color 0.3s"
+  const headerStyle = {
+    backgroundColor: "#0284c7",
+    color: "white",
+    textAlign: "center",
+    padding: "12px 0",
+    fontSize: "18px",
+    fontWeight: "600",
   };
 
   return (
-    <div style={{ padding: 32, backgroundColor: "#F9FAFB", minHeight: "100vh" }}>
-      <button
-        style={buttonStyle}
-        onMouseEnter={e => (e.currentTarget.style.backgroundColor = "#4338CA")}
-        onMouseLeave={e => (e.currentTarget.style.backgroundColor = "#4F46E5")}
-        onClick={() => navigate("/admin-dashboard")}
-      >
-        ← Back to Admin Dashboard
-      </button>
-
-      <h1
+    <div
+      style={{
+        padding: "20px",
+        fontFamily:
+          "'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial",
+        background: "#f9fafb",
+        minHeight: "100vh",
+        position: "relative",
+      }}
+    >
+      {/* ✅ Header + Back Button */}
+      <div
         style={{
-          textAlign: "center",
-          fontSize: 36,
-          fontWeight: 800,
-          marginBottom: 32,
-          color: "#4F46E5"
+          display: "flex",
+          alignItems: "center",
+          marginBottom: "15px",
+          justifyContent: "space-between",
         }}
       >
-        Promoter Database
-      </h1>
+        <h2 style={{ color: "#0284c7", fontSize: "22px" }}>
+          Promoter Database
+        </h2>
+        <button
+          onClick={() => navigate("/admin-dashboard")}
+          style={{
+            background: "#0284c7",
+            color: "#fff",
+            border: "none",
+            borderRadius: "8px",
+            padding: "8px 16px",
+            cursor: "pointer",
+          }}
+        >
+          ← Back
+        </button>
+      </div>
 
+      {/* ✅ Table */}
       <div style={{ overflowX: "auto" }}>
         <table style={tableStyle}>
           <thead>
-            <tr>
-              <th style={thStyle}>Name</th>
-              <th style={thStyle}>Email</th>
-              <th style={thStyle}>Phone</th>
-              <th style={thStyle}>Date Joined</th>
-              <th style={thStyle}>Unique ID</th>
-              <th style={thStyle}>Business Area</th>
-              <th style={thRightStyle}>Commission</th>
+            <tr style={{ backgroundColor: "#e0f2fe" }}>
+              <th style={thtdStyle}>Name</th>
+              <th style={thtdStyle}>Email</th>
+              <th style={thtdStyle}>Phone</th>
+              <th style={thtdStyle}>Unique ID</th>
+              <th style={thtdStyle}>Business Area</th>
+              <th style={thtdStyle}>Enrollment Date</th>
+              <th style={thtdStyle}>Total Commission</th>
+              <th style={thtdStyle}>Pending Amount</th>
+              <th style={thtdStyle}>Status</th>
+              <th style={thtdStyle}>Last Payment</th>
+              <th style={thtdStyle}>Action</th>
             </tr>
           </thead>
           <tbody>
-            {promoters.length > 0 ? (
-              promoters.map((p, idx) => (
+            {promoters.map((p) => {
+              const totalCommission = p.totalCommission || 0;
+              const pendingAmount = p.pendingAmount || 0;
+              const status = pendingAmount === 0 ? "No Dues" : "Pending";
+              return (
                 <tr
                   key={p.id}
                   style={{
-                    backgroundColor: idx % 2 === 0 ? "#F3F4F6" : "#FFFFFF",
-                    transition: "background-color 0.3s",
-                    cursor: "default"
+                    cursor: "pointer",
+                    backgroundColor:
+                      selectedPromoter?.id === p.id ? "#f0f9ff" : "white",
                   }}
-                  onMouseEnter={e => (e.currentTarget.style.backgroundColor = "#E0E7FF")}
-                  onMouseLeave={e =>
-                    (e.currentTarget.style.backgroundColor = idx % 2 === 0 ? "#F3F4F6" : "#FFFFFF")
-                  }
+                  onClick={() => setSelectedPromoter(p)}
                 >
-                  <td style={{ ...tdStyle, color: "#1E40AF", fontWeight: 600 }}>{p.name}</td>
-                  <td style={{ ...tdStyle, color: "#1E3A8A" }}>{p.email}</td>
-                  <td style={tdStyle}>{p.phone}</td>
-                  <td style={tdStyle}>
-                    {p.createdAt?.toDate ? p.createdAt.toDate().toLocaleDateString() : "N/A"}
+                  <td style={thtdStyle}>{p.name || "-"}</td>
+                  <td style={thtdStyle}>{p.email || "-"}</td>
+                  <td style={thtdStyle}>{p.phone || "-"}</td>
+                  <td style={thtdStyle}>{p.uniqueId || "-"}</td>
+                  <td style={thtdStyle}>{p.businessArea || "-"}</td>
+                  <td style={thtdStyle}>
+                    {p.createdAt?.toDate
+                      ? p.createdAt.toDate().toLocaleString()
+                      : "-"}
                   </td>
-                  <td style={{ ...tdStyle, fontFamily: "monospace", color: "#6B21A8" }}>
-                    {p.uniqueId || "-"}
+                  <td style={thtdStyle}>₹{totalCommission}</td>
+                  <td style={thtdStyle}>₹{pendingAmount}</td>
+                  <td
+                    style={{
+                      ...thtdStyle,
+                      color: status === "No Dues" ? "green" : "#eab308",
+                      fontWeight: "600",
+                    }}
+                  >
+                    {status}
                   </td>
-                  <td style={tdStyle}>
-                    {p.businessArea ? <span style={badgeStyle}>{p.businessArea}</span> : "-"}
-                  </td>
-                  <td style={{ ...tdStyle, textAlign: "right", color: "#047857", fontWeight: 700 }}>
-                    ₹{p.totalCommission || 0}
+                  <td style={thtdStyle}>{p.lastPayment || "-"}</td>
+                  <td style={thtdStyle}>
+                    {status === "No Dues" ? (
+                      <span style={{ color: "green", fontWeight: "bold" }}>
+                        No Dues
+                      </span>
+                    ) : (
+                      <button
+                        style={{
+                          background: "#0ea5e9",
+                          color: "#fff",
+                          border: "none",
+                          borderRadius: "6px",
+                          padding: "5px 10px",
+                          cursor: "pointer",
+                        }}
+                      >
+                        Pay
+                      </button>
+                    )}
                   </td>
                 </tr>
-              ))
-            ) : (
-              <tr>
-                <td
-                  colSpan="7"
-                  style={{
-                    padding: 32,
-                    textAlign: "center",
-                    color: "#6B7280",
-                    fontWeight: 600,
-                    fontSize: 16
-                  }}
-                >
-                  No promoters found.
-                </td>
-              </tr>
-            )}
+              );
+            })}
           </tbody>
         </table>
       </div>
+
+      {/* ✅ Right panel for selected promoter */}
+      {selectedPromoter && (
+        <div
+          ref={panelRef}
+          style={{
+            position: "fixed",
+            top: 0,
+            right: 0,
+            width: "320px",
+            height: "100vh",
+            backgroundColor: "#fff",
+            boxShadow: "-2px 0 8px rgba(0,0,0,0.15)",
+            padding: "20px",
+            overflowY: "auto",
+            zIndex: 1000,
+          }}
+        >
+          <h3 style={headerStyle}>Promoter Details</h3>
+          <p>
+            <b>Name:</b> {selectedPromoter.name}
+          </p>
+          <p>
+            <b>Email:</b> {selectedPromoter.email}
+          </p>
+          <p>
+            <b>Phone:</b> {selectedPromoter.phone}
+          </p>
+          <p>
+            <b>Unique ID:</b> {selectedPromoter.uniqueId}
+          </p>
+          <p>
+            <b>Business Area:</b> {selectedPromoter.businessArea}
+          </p>
+          <p>
+            <b>Total Commission:</b> ₹
+            {selectedPromoter.totalCommission || 0}
+          </p>
+          <p>
+            <b>Pending Amount:</b> ₹
+            {selectedPromoter.pendingAmount || 0}
+          </p>
+          <p>
+            <b>Status:</b>{" "}
+            {selectedPromoter.pendingAmount === 0 ? "No Dues" : "Pending"}
+          </p>
+          <p>
+            <b>Last Paid:</b> {selectedPromoter.lastPayment || "-"}
+          </p>
+        </div>
+      )}
     </div>
   );
-}
+};
+
+export default PromoterDatabase;

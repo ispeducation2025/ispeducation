@@ -83,8 +83,8 @@ const StudentDashboard = () => {
             const data = userDoc.data();
             setStudentInfo({
               name: data.name || "Student",
-              classGrade: data.classGrade || "",
-              syllabus: data.syllabus || "",
+              classGrade: data.classGrade || data.class || data.grade || "",
+              syllabus: data.syllabus || data.board || "",
               mappedPromoter: data.mappedPromoter || "",
             });
           } else {
@@ -277,6 +277,60 @@ const StudentDashboard = () => {
           </button>
         </div>
 
+        {/* Student profile (class & syllabus) */}
+        <div
+          style={{
+            marginTop: "12px",
+            display: "flex",
+            gap: "12px",
+            alignItems: "center",
+            color: "#fff",
+            flexWrap: "wrap",
+          }}
+        >
+          <div
+            style={{
+              background: "#ffffff12",
+              padding: "10px 14px",
+              borderRadius: "8px",
+              minWidth: "160px",
+              display: "flex",
+              flexDirection: "column",
+            }}
+          >
+            <small style={{ color: "#cbd5e1", fontSize: "12px" }}>Name</small>
+            <strong style={{ fontSize: "15px" }}>{studentInfo.name || "Student"}</strong>
+          </div>
+
+          <div
+            style={{
+              background: "#ffffff12",
+              padding: "10px 14px",
+              borderRadius: "8px",
+              minWidth: "120px",
+              display: "flex",
+              flexDirection: "column",
+            }}
+          >
+            <small style={{ color: "#cbd5e1", fontSize: "12px" }}>Class</small>
+            <strong style={{ fontSize: "15px" }}>{studentInfo.classGrade || "—"}</strong>
+          </div>
+
+          <div
+            style={{
+              background: "#ffffff12",
+              padding: "10px 14px",
+              borderRadius: "8px",
+              minWidth: "140px",
+              display: "flex",
+              flexDirection: "column",
+            }}
+          >
+            <small style={{ color: "#cbd5e1", fontSize: "12px" }}>Syllabus</small>
+            <strong style={{ fontSize: "15px" }}>{studentInfo.syllabus || "—"}</strong>
+          </div>
+        </div>
+
         {/* Filters */}
         <div
           style={{
@@ -436,6 +490,16 @@ const StudentDashboard = () => {
                   const subj = normalizeSubject(pkg.subject) || "Default";
                   const { basePrice, finalPrice, d1, d2 } = computeFinalPrice(pkg);
 
+                  // compute duration & rates
+                  const durationNum = parseFloat(pkg.duration) || 0;
+                  const rateBefore = durationNum > 0 ? basePrice / durationNum : null;
+                  const rateAfter = durationNum > 0 ? finalPrice / durationNum : null;
+
+                  // freebies may be a string or array in your DB; normalize to string
+                  const freebiesText = Array.isArray(pkg.freebies) ? pkg.freebies.join(", ") : (pkg.freebies || "").toString();
+
+                  const totalDiscount = Math.round((d1 || 0) + (d2 || 0));
+
                   return (
                     <div
                       key={pkg.id}
@@ -451,9 +515,67 @@ const StudentDashboard = () => {
                         display: "flex",
                         flexDirection: "column",
                         justifyContent: "space-between",
+                        position: "relative",
+                        overflow: "hidden",
                       }}
                     >
-                      <div className="zoom-card-inner" style={{ textAlign: "center" }}>
+                      {/* TOP-LEFT RATE STICKER — midnight black with neon green highlight */}
+                      <div
+                        style={{
+                          position: "absolute",
+                          top: "auto",
+                          bottom: 16,
+                          left: "50%",
+                          transform: "translateX(-50%)",
+                          background: "#05060A", // deep midnight-black feel
+                          color: "#b7ffd6", // soft neon-ish green for text contrast
+                          padding: "8px 10px",
+                          borderRadius: "10px",
+                          fontSize: "12px",
+                          fontWeight: 700,
+                          zIndex: 6,
+                          boxShadow: "0 8px 24px rgba(0,255,150,0.06), 0 4px 10px rgba(0,0,0,0.5)",
+                          border: "1px solid rgba(0,255,150,0.12)",
+                          display: "flex",
+                          flexDirection: "column",
+                          alignItems: "flex-start",
+                          lineHeight: 1.05,
+                        }}
+                        aria-hidden
+                      >
+                        {/* Was price (line-through) */}
+                        <span style={{ fontSize: "11px", color: "#9ca3af", textDecoration: rateBefore ? "line-through" : "none", marginBottom: 4 }}>
+                          {rateBefore !== null ? `Was ₹${Number(rateBefore).toFixed(2)}/hr` : "Was —"}
+                        </span>
+
+                        {/* Now price (neon green) */}
+                        <span style={{ fontSize: "13px", color: "#7CFF8E", fontWeight: 900 }}>
+                          {rateAfter !== null ? `Now ₹${Number(rateAfter).toFixed(2)}/hr` : "Now —"}
+                        </span>
+                      </div>
+
+                      {/* Discount badge */}
+                      {totalDiscount > 0 && (
+                        <div
+                          style={{
+                            position: "absolute",
+                            top: "10px",
+                            right: "10px",
+                            background: totalDiscount >= 40 ? "#e11d48" : totalDiscount >= 20 ? "#f97316" : "#16a34a",
+                            color: "#fff",
+                            padding: "4px 8px",
+                            borderRadius: "6px",
+                            fontSize: "12px",
+                            fontWeight: "700",
+                            boxShadow: "0 2px 6px rgba(0,0,0,0.15)",
+                            zIndex: 3,
+                          }}
+                        >
+                          {totalDiscount}% OFF
+                        </div>
+                      )}
+
+                      <div className="zoom-card-inner" style={{ textAlign: "center", zIndex: 2 }}>
                         <img
                           src={subjectImages[subj] || subjectImages.Default}
                           alt={subj}
@@ -473,23 +595,71 @@ const StudentDashboard = () => {
                           {subj} {pkg.subtopic ? "→ " + pkg.subtopic + " → " : ""}{pkg.chapter}
                         </span>
 
+                        {/* Course Details */}
+                        <div
+                          style={{
+                            textAlign: "left",
+                            fontSize: "13px",
+                            color: "#444",
+                            marginBottom: "10px",
+                            lineHeight: "1.4em",
+                          }}
+                        >
+                          {/* Use available fields: courseDetails, description, duration, perHour; fallbacks if not present */}
+                          {pkg.courseDetails && (
+                            <p style={{ margin: "4px 0" }}>
+                              <b>Course:</b> {pkg.courseDetails}
+                            </p>
+                          )}
+                          {!pkg.courseDetails && pkg.description && (
+                            <p style={{ margin: "4px 0" }}>
+                              <b>About:</b> {pkg.description.length > 80 ? pkg.description.slice(0, 80) + "..." : pkg.description}
+                            </p>
+                          )}
+                          {pkg.duration && (
+                            <p style={{ margin: "4px 0" }}>
+                              <b>Duration:</b> {pkg.duration} hrs
+                            </p>
+                          )}
+                          {pkg.perHour && (
+                            <p style={{ margin: "4px 0" }}>
+                              <b>Rate (stored):</b> ₹{pkg.perHour}/hr
+                            </p>
+                          )}
+
+                          {/* Freebies */}
+                          {freebiesText && freebiesText.trim() !== "" && (
+                            <p style={{ margin: "6px 0 0 0", color: "#0f172a", background: "#f1f5f9", padding: "6px", borderRadius: "6px" }}>
+                              <strong style={{ marginRight: 6 }}>🎁 Freebies:</strong>
+                              <span style={{ fontWeight: 500 }}>{freebiesText.length > 80 ? freebiesText.slice(0, 80) + "..." : freebiesText}</span>
+                            </p>
+                          )}
+                        </div>
+
                         {/* Price Section */}
                         <div style={{ textAlign: "left", marginTop: "8px" }}>
-                          <p>
+                          <p style={{ margin: "2px 0" }}>
                             <b>Price:</b>{" "}
                             <span style={{ textDecoration: d1 || d2 ? "line-through" : "none" }}>
                               ₹{basePrice.toFixed(2)}
                             </span>
                           </p>
                           {(d1 || d2) && (
-                            <p>
-                              <b>Discounted:</b> ₹{finalPrice.toFixed(2)}
+                            <p style={{ margin: "2px 0", color: "#16a34a", fontWeight: "700" }}>
+                              <b>Now:</b> ₹{finalPrice.toFixed(2)}
                             </p>
                           )}
-                          {pkg.perHour && pkg.duration && (
-                            <p>
-                              <b>Duration:</b> {pkg.duration} hrs × ₹{pkg.perHour}/hr
-                            </p>
+
+                          {/* Discount breakdown */}
+                          {(d1 > 0 || d2 > 0) && (
+                            <div style={{ marginTop: "6px", fontSize: "13px", color: "#e11d48" }}>
+                              <div>
+                                <b>Discounts:</b>{" "}
+                                {d1 > 0 && <span>{d1}% regular</span>}
+                                {d1 > 0 && d2 > 0 && <span> + </span>}
+                                {d2 > 0 && <span>{d2}% additional</span>}
+                              </div>
+                            </div>
                           )}
                         </div>
 
@@ -497,13 +667,14 @@ const StudentDashboard = () => {
                         <button
                           onClick={() => addToCart(pkg)}
                           style={{
-                            marginTop: "10px",
-                            padding: "6px 12px",
+                            marginTop: "12px",
+                            padding: "8px 14px",
                             background: "#1e90ff",
                             color: "#fff",
                             border: "none",
                             borderRadius: "6px",
                             cursor: "pointer",
+                            fontWeight: "600",
                           }}
                         >
                           Add to Cart
@@ -594,10 +765,6 @@ const StudentDashboard = () => {
       </div>
 
       {/* Fixed bottom policy/footer buttons (example) */}
-      {/* If you already have footer/policy buttons in your app, keep them. 
-          This block is here as a placeholder to show how bottom fixed buttons should be handled.
-          If you already manage them elsewhere, you can remove this.
-      */}
       <div
         className="bottom-fixed-actions"
         style={{
@@ -613,7 +780,6 @@ const StudentDashboard = () => {
           pointerEvents: "auto",
         }}
       >
-        {/* Example buttons; can be removed or styled as needed */}
         <button
           style={{
             padding: "10px 16px",
@@ -625,7 +791,6 @@ const StudentDashboard = () => {
             boxShadow: "0 4px 12px rgba(0,0,0,0.25)",
           }}
           onClick={() => {
-            // Example: open policies
             window.open("/policies", "_blank");
           }}
         >
@@ -642,7 +807,6 @@ const StudentDashboard = () => {
             boxShadow: "0 4px 12px rgba(0,0,0,0.25)",
           }}
           onClick={() => {
-            // Example: contact support
             window.open("/contact", "_blank");
           }}
         >
@@ -657,7 +821,7 @@ const StudentDashboard = () => {
           @media (max-width: 900px) {
             .student-dashboard {
               flex-direction: column;
-              padding-bottom: 140px; /* ensure space for bottom action bar */
+              padding-bottom: 180px; /* ensure space for bottom action bar */
             }
 
             .student-dashboard > div:nth-child(2) {
@@ -679,6 +843,15 @@ const StudentDashboard = () => {
             .packages-grid {
               grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
             }
+
+            .zoom-card > .zoom-card-inner {
+              padding-top: 18px; /* ensure badge doesn't overlap content on small */
+            }
+
+            .zoom-card img {
+              width: 70px !important;
+              height: 70px !important;
+            }
           }
 
           /* Ensure bottom fixed actions don't block content touch events and appear above everything */
@@ -697,6 +870,13 @@ const StudentDashboard = () => {
             .zoom-card img {
               width: 60px !important;
               height: 60px !important;
+            }
+
+            /* make badge slightly smaller on very small screens */
+            .zoom-card div[aria-hidden] {
+              transform: scale(0.92);
+              left: 8px !important;
+              top: 10px !important;
             }
           }
         `}
