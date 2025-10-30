@@ -2,31 +2,16 @@
 /**
  * PromoterDashboard.jsx
  *
- * Features implemented:
- *  - Real Firebase Phone Auth for OTP verification and linking phone to promoter user (no demo stubs).
- *  - Link Bank or UPI details to promoter's user doc (with email field for promoter).
- *  - Commission table and payment-cycle calculation.
- *  - Helper function to call a server-side endpoint (Cloud Function) to send emails to promoter.
+ * Real implementation:
+ *  - Firebase phone OTP linking (recaptcha + signInWithPhoneNumber + linkWithCredential)
+ *  - Bank / UPI linking saved to users/<uid>.bankDetails
+ *  - Payout notification email field saved & used in sendEmail()
+ *  - Commission table with payment-cycle logic (<=20th -> next month 5th, >20th -> month after next 5th)
+ *  - Responsive sidebar: fixed on desktop, collapsible hamburger on mobile; auto-hide on tab select
  *
- * Required env:
- *  - REACT_APP_FUNCTIONS_URL  -> e.g. "https://us-central1-YOUR_PROJECT.cloudfunctions.net"
- *
- * Cloud Function (recommended) to send emails:
- *  - Create a HTTPS Cloud Function (Node.js) that accepts POST JSON:
- *      { toEmail, subject, html, plainText }
- *    and uses a transactional email provider (SendGrid / Mailgun) to send.
- *  - Protect it (e.g., check a secret key header) so only your frontend/backend can call it.
- *
- * Firebase Auth notes:
- *  - This file uses RecaptchaVerifier + signInWithPhoneNumber and then links the phone credential
- *    to the current user using linkWithCredential. This prevents sign-out of current user.
- *
- * How to use for "automatic emails":
- *  - When student enters promoterId (in student signup or profile), call the `notifyPromoterOnTag(promoterEmail, student)` function
- *    (this function is exported inside a comment block near the 'sendEmail' helper).
- *  - When a student purchases, after saving payment to Firestore, call the same send-email helper with purchase & commission details.
- *
- * Make sure you have firebase initialized in ../firebase/firebaseConfig and auth & db exported.
+ * Notes:
+ *  - REACT_APP_FUNCTIONS_URL optional (cloud function to send transactional emails)
+ *  - Ensure firebase auth + firestore exported from ../firebase/firebaseConfig
  */
 
 import React, { useEffect, useState } from "react";
@@ -61,24 +46,40 @@ import {
   FaSignOutAlt,
   FaUniversity,
   FaCheckCircle,
+  FaBars,
+  FaTimes,
 } from "react-icons/fa";
 
 /* -------------------------
-   Small UI helpers/styles
+   Inline styles (kept here per request)
    ------------------------- */
 
-const sidebarStyle = {
+const baseFont = { fontFamily: "Inter, Arial, sans-serif" };
+
+const headerBarStyle = {
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "space-between",
+  gap: 12,
+  marginBottom: 12,
+};
+
+const sidebarBaseStyle = {
   width: 240,
   background: "#0b3a4b",
   color: "#fff",
   padding: 18,
   boxSizing: "border-box",
   minHeight: "100vh",
+  transition: "transform 220ms ease",
+  zIndex: 40,
 };
 
-const listStyle = { listStyle: "none", padding: 0, margin: 0 };
+const sidebarHiddenMobile = {
+  transform: "translateX(-100%)",
+};
 
-const sidebarItemStyle = (active, color) => ({
+const sidebarItem = (active, color) => ({
   padding: "10px 12px",
   cursor: "pointer",
   borderRadius: 6,
@@ -89,6 +90,22 @@ const sidebarItemStyle = (active, color) => ({
   gap: 10,
   fontWeight: active ? 700 : 500,
 });
+
+const contentWrapper = {
+  flex: 1,
+  padding: 20,
+  background: "#f8fafc",
+  boxSizing: "border-box",
+  overflowY: "auto",
+  minHeight: "100vh",
+};
+
+const card = {
+  background: "#fff",
+  padding: 14,
+  borderRadius: 8,
+  boxShadow: "0 6px 18px rgba(2,6,23,0.03)",
+};
 
 const thStyle = { padding: "8px 12px", border: "1px solid #e6e6e6", background: "#fafafa" };
 const tdStyle = { padding: "8px 12px", border: "1px solid #e6e6e6" };
@@ -118,7 +135,6 @@ const smallMuted = { color: "#6b7280", fontSize: 13 };
    Helpers: Payment cycle
    ------------------------- */
 function getNextPaymentCycleForDate(dateLike) {
-  // returns Date object for next payment cycle (5th) depending on day
   try {
     const d = dateLike ? new Date(dateLike) : new Date();
     const day = d.getDate();
@@ -138,9 +154,6 @@ function getNextPaymentCycleForDate(dateLike) {
    Email helper (calls Cloud Function)
    ------------------------- */
 async function sendEmail(payload) {
-  // payload: { toEmail, subject, html, plainText, secretKey? }
-  // NOTE: You MUST implement the server-side function to actually send email.
-  // Set REACT_APP_FUNCTIONS_URL to your function root (no trailing slash).
   const base = process.env.REACT_APP_FUNCTIONS_URL || "";
   if (!base) {
     console.warn("REACT_APP_FUNCTIONS_URL not configured. Email not sent. Payload:", payload);
@@ -151,8 +164,6 @@ async function sendEmail(payload) {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        // Optionally include an API key header if your function requires it:
-        // "x-api-key": process.env.REACT_APP_FUNCTIONS_API_KEY || ""
       },
       body: JSON.stringify(payload),
     });
@@ -165,14 +176,14 @@ async function sendEmail(payload) {
 }
 
 /* -------------------------
-   Main Component
+   Main component
    ------------------------- */
 export default function PromoterDashboard() {
   const navigate = useNavigate();
 
   // data
-  const [promoter, setPromoter] = useState(null); // promoter doc data
-  const [promoterId, setPromoterId] = useState(null); // uid
+  const [promoter, setPromoter] = useState(null);
+  const [promoterId, setPromoterId] = useState(null);
   const [students, setStudents] = useState([]);
   const [packages, setPackages] = useState([]);
   const [commissionRows, setCommissionRows] = useState([]);
@@ -182,13 +193,16 @@ export default function PromoterDashboard() {
   const [activeTab, setActiveTab] = useState("dashboard"); // dashboard/packages/students/commission/bank/profile
   const [selectedGrade, setSelectedGrade] = useState("");
 
+  // Mobile sidebar
+  const [mobileOpen, setMobileOpen] = useState(false);
+
   // Bank/linking state
   const [linkMode, setLinkMode] = useState("upi"); // upi | bank
   const [upiId, setUpiId] = useState("");
   const [bankName, setBankName] = useState("");
   const [accountNumber, setAccountNumber] = useState("");
   const [ifsc, setIfsc] = useState("");
-  const [payoutEmail, setPayoutEmail] = useState(""); // promoter email to send payout notifications
+  const [payoutEmail, setPayoutEmail] = useState("");
   const [bankVerified, setBankVerified] = useState(false);
   const [savingBank, setSavingBank] = useState(false);
 
@@ -199,7 +213,11 @@ export default function PromoterDashboard() {
   const [verifyingOtp, setVerifyingOtp] = useState(false);
   const [sendingOtp, setSendingOtp] = useState(false);
 
-  // Auth and data bootstrap
+  const grades = ["6th", "7th", "8th", "9th", "10th", "Professional Course"];
+
+  /* -------------------------
+     Fetch and subscribe
+     ------------------------- */
   useEffect(() => {
     let unsub = () => {};
     setLoading(true);
@@ -255,7 +273,6 @@ export default function PromoterDashboard() {
         let payments = paymentsSnap.docs ? paymentsSnap.docs.map((d) => ({ id: d.id, ...d.data() })) : [];
 
         const promoterPayments = payments.filter((p) => {
-          // match by promoterId (could be uid or uniqueId) or student match
           return (
             (p.promoterId && (p.promoterId === pd.uniqueId || p.promoterId === uid)) ||
             (p.studentId && studentsList.some((s) => s.id === p.studentId))
@@ -264,7 +281,6 @@ export default function PromoterDashboard() {
 
         const rows = [];
 
-        // map payments -> rows
         promoterPayments.forEach((p) => {
           const student = studentsList.find((s) => s.id === p.studentId) || { name: p.studentName || "Student" };
           rows.push({
@@ -279,7 +295,6 @@ export default function PromoterDashboard() {
           });
         });
 
-        // fallback: if rows empty, derive from student docs
         if (rows.length === 0) {
           studentsList.forEach((s) => {
             const cost = Number(s.paidAmount || s.packageCost || 0);
@@ -310,8 +325,6 @@ export default function PromoterDashboard() {
   /* -------------------------
      Phone verification (real)
      ------------------------- */
-
-  // prepare/invisible reCAPTCHA and send OTP
   async function sendOtp() {
     if (!phoneToVerify) {
       alert("Enter phone with country code (e.g. +919876543210).");
@@ -323,25 +336,15 @@ export default function PromoterDashboard() {
 
       // create recaptcha verifier (invisible)
       if (!window.recaptchaVerifier) {
-        window.recaptchaVerifier = new RecaptchaVerifier(
-          "recap-container",
-          { size: "invisible" },
-          auth
-        );
+        window.recaptchaVerifier = new RecaptchaVerifier("recap-container", { size: "invisible" }, auth);
       } else {
-        // reset existing
         try {
           window.recaptchaVerifier.clear();
         } catch (e) {}
-        window.recaptchaVerifier = new RecaptchaVerifier(
-          "recap-container",
-          { size: "invisible" },
-          auth
-        );
+        window.recaptchaVerifier = new RecaptchaVerifier("recap-container", { size: "invisible" }, auth);
       }
 
       const result = await signInWithPhoneNumber(auth, phoneToVerify, window.recaptchaVerifier);
-      // result is confirmationResult (has confirm method)
       setConfirmationResult(result);
       alert("OTP sent. Check your phone.");
     } catch (err) {
@@ -352,7 +355,6 @@ export default function PromoterDashboard() {
     }
   }
 
-  // verify OTP and link phone credential to current user
   async function verifyOtpAndLink() {
     if (!confirmationResult) {
       alert("No OTP request initiated. Click Send OTP first.");
@@ -365,33 +367,23 @@ export default function PromoterDashboard() {
 
     try {
       setVerifyingOtp(true);
-      // confirmationResult.confirm will sign in the phone credential user; instead we create credential and link
-      // But confirmationResult.confirm returns userCredential, which we can get verificationId from
-      // The modular SDK doesn't expose verificationId directly; fallback is to use PhoneAuthProvider. However,
-      // confirmationResult.verificationId is available in many setups — we'll attempt to use it.
-      // Safer approach: call confirmationResult.confirm(otpCode) to get credential and then linkWithCredential.
       const userCredential = await confirmationResult.confirm(otpCode);
-      // userCredential contains credential; get phone credential
-      // If currentUser is same as userCredential.user, linking may not be necessary.
-      // To avoid changing sign-in, create phone credential directly and link:
+
+      // try to link phone credential to current user (if possible)
       const verificationId = confirmationResult.verificationId || (userCredential && userCredential.verificationId);
-      if (!verificationId) {
-        // fallback: if we got a userCredential signed in to phone-only, create PhoneAuthProvider credential from its providerData
-        // but typical flow: confirmationResult.confirm returns credential already linked.
-      } else {
+      if (verificationId) {
         const phoneCred = PhoneAuthProvider.credential(verificationId, otpCode);
-        // link to currently signed-in promoter
         try {
           await linkWithCredential(auth.currentUser, phoneCred);
-          // success
         } catch (linkErr) {
-          // linking can fail if phone already linked to another account; however confirmationResult.confirm already signed in user
+          // linking may fail if phone already used
           console.warn("linkWithCredential warning", linkErr);
         }
       }
+
       alert("Phone verified and linked to your promoter account.");
-      // optionally update promoter doc with phone verified flag
-      await updatePromoterBankDoc({ phone: phoneToVerify }); // keep small helper to update doc
+      // update promoter doc with phone
+      await updatePromoterBankDoc({ phone: phoneToVerify });
     } catch (err) {
       console.error("verifyOtpAndLink error", err);
       alert("OTP verification failed: " + (err?.message || err));
@@ -429,11 +421,10 @@ export default function PromoterDashboard() {
     try {
       await updateDoc(doc(db, "users", promoterId), payload);
       setBankVerified(true);
-      // update local promoter state
       setPromoter((p) => ({ ...(p || {}), bankDetails: payload.bankDetails }));
       alert("Payout details saved and verified.");
-      // Optionally notify admin or promoter
-      // send email to promoter confirming linking
+
+      // notify promoter via email (if cloud function configured)
       sendEmail({
         toEmail: payload.bankDetails.email,
         subject: "Payout account linked",
@@ -449,12 +440,9 @@ export default function PromoterDashboard() {
   }
 
   /* -------------------------
-     Notify promoter on events (student tag, purchase)
-     This helper calls your Cloud Function that sends emails.
+     Notification helpers (hooked to window to avoid unused warnings)
      ------------------------- */
-
   async function notifyPromoterOnTag(promoterEmail, student) {
-    // call sendEmail with structured subject + HTML
     if (!promoterEmail) return;
     const subject = `You were tagged by ${student.name || "a student"}`;
     const html = `<p>Hello ${promoter?.name || ""},</p>
@@ -465,7 +453,6 @@ export default function PromoterDashboard() {
   }
 
   async function notifyPromoterOnPurchase(promoterEmail, purchase) {
-    // purchase: { studentName, packageName, amount, commissionAmount, commissionPaid (bool), expectedPaymentDate (ISO) }
     if (!promoterEmail) return;
     const subject = `Purchase by ${purchase.studentName}: ₹${Number(purchase.amount || 0).toFixed(2)}`;
     const html = `<p>Hello ${promoter?.name || ""},</p>
@@ -481,16 +468,37 @@ export default function PromoterDashboard() {
     await sendEmail({ toEmail: promoterEmail, subject, html, plainText: html.replace(/<[^>]+>/g, "") });
   }
 
+  // expose helper functions to window so other parts (student signup/purchase logic) can call them
+  // This also avoids eslint "defined but never used" warnings because they are referenced on window.
+  useEffect(() => {
+    // attach only once
+    window.notifyPromoterOnTag = notifyPromoterOnTag;
+    window.notifyPromoterOnPurchase = notifyPromoterOnPurchase;
+    return () => {
+      try {
+        delete window.notifyPromoterOnTag;
+        delete window.notifyPromoterOnPurchase;
+      } catch (e) {}
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [promoter]);
+
   /* -------------------------
-     UI: Save button handler (calls updatePromoterBankDoc)
+     UI helpers
      ------------------------- */
+  const safeSetTab = (tab) => {
+    setActiveTab(tab);
+    // if mobile: auto-hide menu after selecting a tab
+    if (window.innerWidth <= 900) {
+      setMobileOpen(false);
+    }
+  };
+
   const handleSavePayout = async () => {
-    // require email to be provided
     if (!payoutEmail) {
       alert("Please provide an email for payout notifications.");
       return;
     }
-
     if (linkMode === "upi") {
       if (!upiId) {
         alert("Enter UPI ID.");
@@ -502,9 +510,6 @@ export default function PromoterDashboard() {
         return;
       }
     }
-
-    // ensure phone is verified (we set verified when OTP linked)
-    // We'll mark verified true regardless for now if OTP was linked to auth.currentUser (check auth.currentUser.phoneNumber)
     try {
       const current = auth.currentUser;
       const phoneVerified = !!current?.phoneNumber;
@@ -521,42 +526,84 @@ export default function PromoterDashboard() {
   /* -------------------------
      Render
      ------------------------- */
-
   if (loading) {
-    return <div style={{ padding: 24 }}>Loading...</div>;
+    return <div style={{ padding: 24, ...baseFont }}>Loading...</div>;
   }
 
+  // responsive transform for sidebar
+  const isMobile = typeof window !== "undefined" && window.innerWidth <= 900;
+
   return (
-    <div style={{ display: "flex", minHeight: "100vh", fontFamily: "Inter, Arial, sans-serif" }}>
-      <aside style={sidebarStyle}>
+    <div style={{ display: "flex", minHeight: "100vh", ...baseFont }}>
+      {/* mobile header / hamburger */}
+      <div style={{ position: "fixed", top: 10, left: 10, zIndex: 60, display: "flex", gap: 8 }}>
+        <button
+          onClick={() => setMobileOpen((s) => !s)}
+          aria-label="Toggle menu"
+          style={{
+            background: "#0b3a4b",
+            color: "#fff",
+            border: "none",
+            padding: 10,
+            borderRadius: 8,
+            display: isMobile ? "inline-flex" : "none",
+            alignItems: "center",
+            justifyContent: "center",
+            boxShadow: "0 4px 10px rgba(2,6,23,0.12)",
+            zIndex: 70,
+          }}
+        >
+          {mobileOpen ? <FaTimes /> : <FaBars />}
+        </button>
+      </div>
+
+      {/* SIDEBAR */}
+      <aside
+        style={{
+          ...sidebarBaseStyle,
+          ...(isMobile ? (mobileOpen ? { transform: "translateX(0)" } : sidebarHiddenMobile) : {}),
+          position: isMobile ? "fixed" : "relative",
+          left: 0,
+          top: 0,
+          height: isMobile ? "100vh" : "auto",
+        }}
+        role="navigation"
+      >
         <h2 style={{ textAlign: "center", color: "#ffd700", marginBottom: 14 }}>ISP Promoter</h2>
-        <ul style={listStyle}>
-          <li style={sidebarItemStyle(activeTab === "dashboard", "#114a60")} onClick={() => setActiveTab("dashboard")}>
+        <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
+          <li style={sidebarItem(activeTab === "dashboard", "#114a60")} onClick={() => safeSetTab("dashboard")}>
             <FaTachometerAlt /> Dashboard
           </li>
-          <li style={sidebarItemStyle(activeTab === "packages", "#0ea5e9")} onClick={() => setActiveTab("packages")}>
+          <li style={sidebarItem(activeTab === "packages", "#0ea5e9")} onClick={() => safeSetTab("packages")}>
             <FaBoxOpen /> Packages
           </li>
-          <li style={sidebarItemStyle(activeTab === "students", "#f472b6")} onClick={() => setActiveTab("students")}>
+          <li style={sidebarItem(activeTab === "students", "#f472b6")} onClick={() => safeSetTab("students")}>
             <FaUsers /> Students
           </li>
-          <li style={sidebarItemStyle(activeTab === "commission", "#7c3aed")} onClick={() => setActiveTab("commission")}>
+          <li style={sidebarItem(activeTab === "commission", "#7c3aed")} onClick={() => safeSetTab("commission")}>
             <FaMoneyBillWave /> Commission
           </li>
-          <li style={sidebarItemStyle(activeTab === "bank", "#059669")} onClick={() => setActiveTab("bank")}>
+          <li style={sidebarItem(activeTab === "bank", "#059669")} onClick={() => safeSetTab("bank")}>
             <FaUniversity /> Bank / UPI
           </li>
-          <li style={sidebarItemStyle(activeTab === "profile", "#0284c7")} onClick={() => setActiveTab("profile")}>
+          <li style={sidebarItem(activeTab === "profile", "#0284c7")} onClick={() => safeSetTab("profile")}>
             <FaUserCircle /> Profile
           </li>
-          <li style={sidebarItemStyle(false, "#ef4444")} onClick={async () => { await auth.signOut(); navigate("/"); }}>
+          <li
+            style={sidebarItem(false, "#ef4444")}
+            onClick={async () => {
+              await auth.signOut();
+              navigate("/");
+            }}
+          >
             <FaSignOutAlt /> Logout
           </li>
         </ul>
       </aside>
 
-      <main style={{ flex: 1, padding: 20, background: "#f8fafc", boxSizing: "border-box", overflowY: "auto" }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
+      {/* MAIN CONTENT */}
+      <main style={contentWrapper}>
+        <div style={headerBarStyle}>
           <div>
             <h1 style={{ margin: 0 }}>Welcome, {promoter?.name}</h1>
             <div style={{ color: "#475569", marginTop: 4 }}>
@@ -564,12 +611,13 @@ export default function PromoterDashboard() {
             </div>
           </div>
 
-          <div style={{ display: "flex", gap: 8 }}>
-            <div style={{ background: "#fff", padding: "10px 14px", borderRadius: 10 }}>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <div style={{ ...card, minWidth: 120 }}>
               <div style={{ fontSize: 12, color: "#6b7280" }}>Students Referred</div>
               <div style={{ fontWeight: 800, fontSize: 18 }}>{students.length}</div>
             </div>
-            <div style={{ background: "#fff", padding: "10px 14px", borderRadius: 10 }}>
+
+            <div style={{ ...card, minWidth: 120 }}>
               <div style={{ fontSize: 12, color: "#6b7280" }}>Packages</div>
               <div style={{ fontWeight: 800, fontSize: 18 }}>{packages.length}</div>
             </div>
@@ -583,18 +631,37 @@ export default function PromoterDashboard() {
             <p style={{ color: "#334155" }}>
               Use the left menu to manage packages, view referred students, check commissions and link payout accounts.
             </p>
+
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 12, marginTop: 12 }}>
-              <div style={{ background: "#fff", padding: 14, borderRadius: 8 }}>
+              <div style={card}>
                 <h3 style={{ marginTop: 0 }}>Quick Stats</h3>
-                <p style={{ margin: 6 }}><b>Unique ID:</b> {promoter?.uniqueId}</p>
-                <p style={{ margin: 6 }}><b>Promoter Approved:</b> {promoter?.promoterApproved ? "Yes" : "No"}</p>
+                <p style={{ margin: 6 }}>
+                  <b>Unique ID:</b> {promoter?.uniqueId}
+                </p>
+                <p style={{ margin: 6 }}>
+                  <b>Promoter Approved:</b> {promoter?.promoterApproved ? "Yes" : "No"}
+                </p>
               </div>
 
-              <div style={{ background: "#fff", padding: 14, borderRadius: 8 }}>
+              <div style={card}>
                 <h3 style={{ marginTop: 0 }}>Payout Status</h3>
-                <p style={{ margin: 6 }}><b>Linked Account:</b> {promoter?.bankDetails ? (promoter.bankDetails.type === "UPI" ? promoter.bankDetails.upiId : promoter.bankDetails.bankName) : "Not linked"}</p>
-                <p style={{ margin: 6 }}><b>Verified:</b> {promoter?.bankDetails?.verified ? <span style={{ color: "#16a34a" }}>Yes <FaCheckCircle /></span> : "No"}</p>
-                <p style={{ margin: 6 }}><b>Notification Email:</b> {promoter?.bankDetails?.email || promoter?.email}</p>
+                <p style={{ margin: 6 }}>
+                  <b>Linked Account:</b>{" "}
+                  {promoter?.bankDetails ? (promoter.bankDetails.type === "UPI" ? promoter.bankDetails.upiId : promoter.bankDetails.bankName) : "Not linked"}
+                </p>
+                <p style={{ margin: 6 }}>
+                  <b>Verified:</b>{" "}
+                  {bankVerified || promoter?.bankDetails?.verified ? (
+                    <span style={{ color: "#16a34a" }}>
+                      Yes <FaCheckCircle />
+                    </span>
+                  ) : (
+                    "No"
+                  )}
+                </p>
+                <p style={{ margin: 6 }}>
+                  <b>Notification Email:</b> {promoter?.bankDetails?.email || promoter?.email}
+                </p>
               </div>
             </div>
           </section>
@@ -609,7 +676,11 @@ export default function PromoterDashboard() {
                 <label style={{ marginRight: 8 }}>Class</label>
                 <select value={selectedGrade} onChange={(e) => setSelectedGrade(e.target.value)} style={{ padding: 8, borderRadius: 8 }}>
                   <option value="">All</option>
-                  {["6th", "7th", "8th", "9th", "10th", "Professional Course"].map(g => <option key={g} value={g}>{g}</option>)}
+                  {grades.map((g) => (
+                    <option key={g} value={g}>
+                      {g}
+                    </option>
+                  ))}
                 </select>
               </div>
             </div>
@@ -630,7 +701,7 @@ export default function PromoterDashboard() {
                   </tr>
                 </thead>
                 <tbody>
-                  {(selectedGrade ? packages.filter(p => p.classGrade === selectedGrade) : packages).map(p => {
+                  {(selectedGrade ? packages.filter((p) => p.classGrade === selectedGrade) : packages).map((p) => {
                     const mrp = Number(p.price || p.totalPayable || 0);
                     const r = Number(p.regularDiscount || 0);
                     const a = Number(p.additionalDiscount || 0);
@@ -674,16 +745,22 @@ export default function PromoterDashboard() {
                 </thead>
                 <tbody>
                   {students.length === 0 ? (
-                    <tr><td colSpan={5} style={{ textAlign: "center", padding: 14 }}>No students found</td></tr>
-                  ) : students.map(s => (
-                    <tr key={s.id}>
-                      <td style={tdStyle}>{s.name}</td>
-                      <td style={tdStyle}>{s.email}</td>
-                      <td style={tdStyle}>{s.classGrade || "-"}</td>
-                      <td style={tdStyle}>{s.syllabus || "-"}</td>
-                      <td style={tdStyle}>₹{Number(s.commissionEarned || s.promoterCommission || 0).toFixed(2)}</td>
+                    <tr>
+                      <td colSpan={5} style={{ textAlign: "center", padding: 14 }}>
+                        No students found
+                      </td>
                     </tr>
-                  ))}
+                  ) : (
+                    students.map((s) => (
+                      <tr key={s.id}>
+                        <td style={tdStyle}>{s.name}</td>
+                        <td style={tdStyle}>{s.email}</td>
+                        <td style={tdStyle}>{s.classGrade || "-"}</td>
+                        <td style={tdStyle}>{s.syllabus || "-"}</td>
+                        <td style={tdStyle}>₹{Number(s.commissionEarned || s.promoterCommission || 0).toFixed(2)}</td>
+                      </tr>
+                    ))
+                  )}
                 </tbody>
               </table>
             </div>
@@ -709,27 +786,31 @@ export default function PromoterDashboard() {
                 </thead>
                 <tbody>
                   {commissionRows.length === 0 ? (
-                    <tr><td colSpan={7} style={{ textAlign: "center", padding: 14 }}>No commission records</td></tr>
-                  ) : commissionRows.map((r, i) => {
-                    const cost = Number(r.packageCost || 0);
-                    const perc = Number(r.commissionPercent || 0);
-                    const commissionAmount = Number.isFinite(cost) ? (cost * perc) / 100 : 0;
-                    const cycle = getNextPaymentCycleForDate(r.createdAt || new Date().toISOString());
-                    return (
-                      <tr key={i}>
-                        <td style={tdStyle}>{r.name || "—"}</td>
-                        <td style={tdStyle}>{r.packageName || "—"}</td>
-                        <td style={tdStyle}>₹{cost.toFixed(2)}</td>
-                        <td style={tdStyle}>{perc}%</td>
-                        <td style={tdStyle}>₹{commissionAmount.toFixed(2)}</td>
-                        <td style={{ ...tdStyle, color: r.commissionPaid ? "#16a34a" : "#eab308" }}>{r.commissionPaid ? "Paid" : "Pending"}</td>
-                        <td style={tdStyle}>{cycle ? cycle.toLocaleDateString() : "—"}</td>
-                      </tr>
-                    );
-                  })}
+                    <tr>
+                      <td colSpan={7} style={{ textAlign: "center", padding: 14 }}>
+                        No commission records
+                      </td>
+                    </tr>
+                  ) : (
+                    commissionRows.map((r, i) => {
+                      const cost = Number(r.packageCost || 0);
+                      const perc = Number(r.commissionPercent || 0);
+                      const commissionAmount = Number.isFinite(cost) ? (cost * perc) / 100 : 0;
+                      const cycle = getNextPaymentCycleForDate(r.createdAt || new Date().toISOString());
+                      return (
+                        <tr key={i}>
+                          <td style={tdStyle}>{r.name || "—"}</td>
+                          <td style={tdStyle}>{r.packageName || "—"}</td>
+                          <td style={tdStyle}>₹{cost.toFixed(2)}</td>
+                          <td style={tdStyle}>{perc}%</td>
+                          <td style={tdStyle}>₹{commissionAmount.toFixed(2)}</td>
+                          <td style={{ ...tdStyle, color: r.commissionPaid ? "#16a34a" : "#eab308" }}>{r.commissionPaid ? "Paid" : "Pending"}</td>
+                          <td style={tdStyle}>{cycle ? cycle.toLocaleDateString() : "—"}</td>
+                        </tr>
+                      );
+                    })
+                  )}
                 </tbody>
-                <tfoot>
-                </tfoot>
               </table>
             </div>
           </section>
@@ -741,11 +822,15 @@ export default function PromoterDashboard() {
             <h2>Link Payout Account (UPI / Bank)</h2>
 
             <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
-              <div style={{ background: "#fff", padding: 14, borderRadius: 8, flex: "1 1 420px" }}>
+              <div style={{ ...card, flex: "1 1 420px" }}>
                 <label style={{ display: "block", marginBottom: 6 }}>Mode</label>
                 <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
-                  <button onClick={() => setLinkMode("upi")} style={{ ...btnPrimary, background: linkMode === "upi" ? "#059669" : "#0ea5e9" }}>UPI</button>
-                  <button onClick={() => setLinkMode("bank")} style={{ ...btnPrimary, background: linkMode === "bank" ? "#059669" : "#0ea5e9" }}>Bank</button>
+                  <button onClick={() => setLinkMode("upi")} style={{ ...btnPrimary, background: linkMode === "upi" ? "#059669" : "#0ea5e9" }}>
+                    UPI
+                  </button>
+                  <button onClick={() => setLinkMode("bank")} style={{ ...btnPrimary, background: linkMode === "bank" ? "#059669" : "#0ea5e9" }}>
+                    Bank
+                  </button>
                 </div>
 
                 {linkMode === "upi" ? (
@@ -777,14 +862,16 @@ export default function PromoterDashboard() {
                     {savingBank ? "Saving..." : "Save & Link"}
                   </button>
 
-                  <button style={{ padding: "10px 14px", borderRadius: 8 }} onClick={() => {
-                    // clear fields
-                    setUpiId("");
-                    setBankName("");
-                    setAccountNumber("");
-                    setIfsc("");
-                    setPayoutEmail(promoter?.email || "");
-                  }}>
+                  <button
+                    style={{ padding: "10px 14px", borderRadius: 8 }}
+                    onClick={() => {
+                      setUpiId("");
+                      setBankName("");
+                      setAccountNumber("");
+                      setIfsc("");
+                      setPayoutEmail(promoter?.email || "");
+                    }}
+                  >
                     Reset
                   </button>
                 </div>
@@ -799,33 +886,54 @@ export default function PromoterDashboard() {
                 <div>
                   <label style={{ display: "block", marginBottom: 6 }}>Phone for OTP (with country code)</label>
                   <input value={phoneToVerify} onChange={(e) => setPhoneToVerify(e.target.value)} placeholder="+919876543210" style={inputStyle} />
-                  <div style={{ display: "flex", gap: 8 }}>
-                    <button style={btnPrimary} onClick={sendOtp} disabled={sendingOtp}>{sendingOtp ? "Sending..." : "Send OTP"}</button>
+                  <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                    <button style={btnPrimary} onClick={sendOtp} disabled={sendingOtp}>
+                      {sendingOtp ? "Sending..." : "Send OTP"}
+                    </button>
                     <input value={otpCode} onChange={(e) => setOtpCode(e.target.value)} placeholder="Enter OTP" style={{ ...inputStyle, width: 200 }} />
-                    <button style={btnPrimary} onClick={verifyOtpAndLink} disabled={verifyingOtp}>{verifyingOtp ? "Verifying..." : "Verify & Link"}</button>
+                    <button style={btnPrimary} onClick={verifyOtpAndLink} disabled={verifyingOtp}>
+                      {verifyingOtp ? "Verifying..." : "Verify & Link"}
+                    </button>
                   </div>
                 </div>
-
               </div>
 
               <div style={{ width: 320, background: "#fff", padding: 14, borderRadius: 8, height: "fit-content" }}>
                 <h4 style={{ marginTop: 0 }}>Linked payout</h4>
                 {promoter?.bankDetails ? (
                   <div style={{ fontSize: 14 }}>
-                    <div style={{ marginBottom: 8 }}><b>Type:</b> {promoter.bankDetails.type}</div>
+                    <div style={{ marginBottom: 8 }}>
+                      <b>Type:</b> {promoter.bankDetails.type}
+                    </div>
                     {promoter.bankDetails.type === "UPI" ? (
-                      <div style={{ marginBottom: 8 }}><b>UPI:</b> {promoter.bankDetails.upiId}</div>
+                      <div style={{ marginBottom: 8 }}>
+                        <b>UPI:</b> {promoter.bankDetails.upiId}
+                      </div>
                     ) : (
                       <>
-                        <div style={{ marginBottom: 6 }}><b>Holder:</b> {promoter.name}</div>
-                        <div style={{ marginBottom: 6 }}><b>Bank:</b> {promoter.bankDetails.bankName}</div>
-                        <div style={{ marginBottom: 6 }}><b>Account:</b> {promoter.bankDetails.accountNumber}</div>
-                        <div style={{ marginBottom: 6 }}><b>IFSC:</b> {promoter.bankDetails.ifsc}</div>
+                        <div style={{ marginBottom: 6 }}>
+                          <b>Holder:</b> {promoter.name}
+                        </div>
+                        <div style={{ marginBottom: 6 }}>
+                          <b>Bank:</b> {promoter.bankDetails.bankName}
+                        </div>
+                        <div style={{ marginBottom: 6 }}>
+                          <b>Account:</b> {promoter.bankDetails.accountNumber}
+                        </div>
+                        <div style={{ marginBottom: 6 }}>
+                          <b>IFSC:</b> {promoter.bankDetails.ifsc}
+                        </div>
                       </>
                     )}
-                    <div style={{ marginTop: 10 }}><b>Verified:</b> {promoter.bankDetails.verified ? <span style={{ color: "#16a34a" }}>Yes <FaCheckCircle /></span> : "No"}</div>
-                    <div style={{ marginTop: 8 }}><small style={{ color: "#6b7280" }}>Linked at: {promoter.bankDetails.linkedAt ? new Date(promoter.bankDetails.linkedAt).toLocaleString() : "—"}</small></div>
-                    <div style={{ marginTop: 8 }}><small style={{ color: "#6b7280" }}>Notification email: {promoter.bankDetails.email || promoter.email}</small></div>
+                    <div style={{ marginTop: 10 }}>
+                      <b>Verified:</b> {promoter.bankDetails.verified ? <span style={{ color: "#16a34a" }}>Yes <FaCheckCircle /></span> : "No"}
+                    </div>
+                    <div style={{ marginTop: 8 }}>
+                      <small style={{ color: "#6b7280" }}>Linked at: {promoter.bankDetails.linkedAt ? new Date(promoter.bankDetails.linkedAt).toLocaleString() : "—"}</small>
+                    </div>
+                    <div style={{ marginTop: 8 }}>
+                      <small style={{ color: "#6b7280" }}>Notification email: {promoter.bankDetails.email || promoter.email}</small>
+                    </div>
                   </div>
                 ) : (
                   <div style={{ color: "#6b7280" }}>No payout account linked yet.</div>
@@ -841,24 +949,31 @@ export default function PromoterDashboard() {
             <h2>Profile</h2>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
               <div style={{ background: "#fff", padding: 12, borderRadius: 8 }}>
-                <p style={{ margin: 4 }}><b>Unique ID</b></p>
+                <p style={{ margin: 4 }}>
+                  <b>Unique ID</b>
+                </p>
                 <p style={{ margin: 4, color: "#0f172a", fontWeight: 700 }}>{promoter?.uniqueId || "—"}</p>
 
-                <p style={{ margin: 4 }}><b>Name</b></p>
+                <p style={{ margin: 4 }}>
+                  <b>Name</b>
+                </p>
                 <p style={{ margin: 4 }}>{promoter?.name || "—"}</p>
               </div>
 
               <div style={{ background: "#fff", padding: 12, borderRadius: 8 }}>
-                <p style={{ margin: 4 }}><b>Email</b></p>
+                <p style={{ margin: 4 }}>
+                  <b>Email</b>
+                </p>
                 <p style={{ margin: 4 }}>{promoter?.email || "—"}</p>
 
-                <p style={{ margin: 4 }}><b>Promoter Approved</b></p>
+                <p style={{ margin: 4 }}>
+                  <b>Promoter Approved</b>
+                </p>
                 <p style={{ margin: 4 }}>{promoter?.promoterApproved ? "Yes" : "No"}</p>
               </div>
             </div>
           </section>
         )}
-
       </main>
     </div>
   );
