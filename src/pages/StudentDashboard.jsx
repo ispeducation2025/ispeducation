@@ -59,6 +59,11 @@ const StudentDashboard = () => {
   const [selectedChapter, setSelectedChapter] = useState("");
   const [cart, setCart] = useState([]);
 
+  // New: reports state & active tab
+  const [activeTab, setActiveTab] = useState("shop"); // "shop" (default) or "reports"
+  const [studentReports, setStudentReports] = useState([]);
+  const [loadingReports, setLoadingReports] = useState(false);
+
   // Load Razorpay dynamically (Option B)
   useEffect(() => {
     const script = document.createElement("script");
@@ -181,6 +186,61 @@ const StudentDashboard = () => {
   const removeFromCart = (id) => setCart((c) => c.filter((p) => p.id !== id));
   const cartTotal = useMemo(() => cart.reduce((sum, p) => sum + parseFloat(p.totalPayable || p.price || 0), 0), [cart]);
 
+  // Helper - compute displayed price safely
+  const computeFinalPrice = (pkg) => {
+    const basePrice = parseFloat(pkg.price || pkg.totalPayable || 0) || 0;
+    const d1 = parseFloat(pkg.regularDiscount || 0) || 0;
+    const d2 = parseFloat(pkg.additionalDiscount || 0) || 0;
+    const computedFinal = basePrice - (basePrice * d1) / 100 - (basePrice * d2) / 100;
+    const finalPrice = Number.isFinite(parseFloat(pkg.totalPayable)) ? parseFloat(pkg.totalPayable) : computedFinal;
+    return { basePrice, finalPrice, d1, d2 };
+  };
+
+  // Save studentDatabase record helper (uses collection name 'studentDatabase' per your request)
+  const saveStudentDatabaseRecord = async (record) => {
+    try {
+      await addDoc(collection(db, "studentDatabase"), record);
+      // console.log("Saved studentDatabase record:", record);
+    } catch (err) {
+      console.error("Error saving studentDatabase record:", err);
+    }
+  };
+
+  // Fetch student's own reports from studentDatabase
+  const fetchStudentReports = async () => {
+    setLoadingReports(true);
+    try {
+      const uid = auth.currentUser?.uid;
+      if (!uid) {
+        setStudentReports([]);
+        setLoadingReports(false);
+        return;
+      }
+      const q = query(collection(db, "studentDatabase"), where("studentId", "==", uid));
+      const snapshot = await getDocs(q);
+      const list = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
+      // Sort by createdAt or paymentDate descending if available
+      list.sort((a, b) => {
+        const ta = a.createdAt ? new Date(a.createdAt).getTime() : a.paymentDate ? new Date(a.paymentDate).getTime() : 0;
+        const tb = b.createdAt ? new Date(b.createdAt).getTime() : b.paymentDate ? new Date(b.paymentDate).getTime() : 0;
+        return tb - ta;
+      });
+      setStudentReports(list);
+    } catch (err) {
+      console.error("Error fetching student reports:", err);
+    } finally {
+      setLoadingReports(false);
+    }
+  };
+
+  // When user navigates to reports tab, fetch their payments
+  useEffect(() => {
+    if (activeTab === "reports") {
+      fetchStudentReports();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab]);
+
   // Razorpay Checkout
   const handleCheckout = async () => {
     if (cart.length === 0) {
@@ -200,23 +260,55 @@ const StudentDashboard = () => {
         try {
           alert("Payment successful! Payment ID: " + response.razorpay_payment_id);
           const paymentsRef = collection(db, "payments");
+
+          // For each package in cart: save to payments AND studentDatabase
           for (const pkg of cart) {
-            // Save payment details in Firestore
-            await addDoc(paymentsRef, {
+            const paymentDoc = {
               studentId: auth.currentUser.uid,
               packageId: pkg.id,
               packageName: pkg.packageName || pkg.concept,
               subject: pkg.subject || "",
-              amount: pkg.totalPayable || pkg.price || 0,
+              amount: Number(pkg.totalPayable || pkg.price || 0),
               paymentId: response.razorpay_payment_id,
               promoterId: studentInfo.mappedPromoter || null,
               settlementStatus: "pending", // Admin will update to 'settled' later
-              createdAt: new Date(),
-            });
+              createdAt: new Date().toISOString(),
+            };
+
+            // Save to payments collection (existing)
+            await addDoc(paymentsRef, paymentDoc);
+
+            // Also save a student-facing record (studentDatabase) for easier admin + student view
+            const studentRecord = {
+              studentId: auth.currentUser.uid,
+              name: studentInfo.name || "",
+              email: auth.currentUser?.email || "",
+              packageId: pkg.id,
+              packageName: pkg.packageName || pkg.concept,
+              subject: pkg.subject || "",
+              amount: Number(pkg.totalPayable || pkg.price || 0),
+              paymentId: response.razorpay_payment_id,
+              promoterId: studentInfo.mappedPromoter || null,
+              promoterApproved: false, // admin can set this later
+              alsoPromoter: false,
+              paymentStatus: "Paid",
+              paymentDate: new Date().toISOString(),
+              createdAt: new Date().toISOString(),
+            };
+
+            await saveStudentDatabaseRecord(studentRecord);
           }
+
+          // Clear cart
           setCart([]);
+
+          // If user is viewing reports, refresh
+          if (activeTab === "reports") {
+            fetchStudentReports();
+          }
         } catch (err) {
           console.error("Error saving payment:", err);
+          alert("Payment succeeded but saving record failed. Check console.");
         }
       },
       prefill: {
@@ -243,16 +335,6 @@ const StudentDashboard = () => {
     navigate("/");
   };
 
-  // Helper - compute displayed price safely
-  const computeFinalPrice = (pkg) => {
-    const basePrice = parseFloat(pkg.price || pkg.totalPayable || 0) || 0;
-    const d1 = parseFloat(pkg.regularDiscount || 0) || 0;
-    const d2 = parseFloat(pkg.additionalDiscount || 0) || 0;
-    const computedFinal = basePrice - (basePrice * d1) / 100 - (basePrice * d2) / 100;
-    const finalPrice = Number.isFinite(parseFloat(pkg.totalPayable)) ? parseFloat(pkg.totalPayable) : computedFinal;
-    return { basePrice, finalPrice, d1, d2 };
-  };
-
   return (
     <div
       className="student-dashboard"
@@ -268,13 +350,46 @@ const StudentDashboard = () => {
       <div style={{ flex: 3, padding: "20px" }}>
         <div className="dashboard-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", color: "#fff" }}>
           <h1>Welcome, {studentInfo.name}!</h1>
-          <button
-            className="logout-btn"
-            onClick={handleLogout}
-            style={{ background: "#ff4757", color: "#fff", border: "none", padding: "8px 16px", borderRadius: "6px", cursor: "pointer" }}
-          >
-            Logout
-          </button>
+
+          {/* Tab controls (Shop / Reports) */}
+          <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+            <button
+              onClick={() => setActiveTab("shop")}
+              style={{
+                background: activeTab === "shop" ? "#0ea5e9" : "transparent",
+                color: activeTab === "shop" ? "#fff" : "#fff",
+                border: "none",
+                padding: "8px 12px",
+                borderRadius: "8px",
+                cursor: "pointer",
+                fontWeight: 600,
+              }}
+            >
+              Shop
+            </button>
+            <button
+              onClick={() => setActiveTab("reports")}
+              style={{
+                background: activeTab === "reports" ? "#10b981" : "transparent",
+                color: "#fff",
+                border: "none",
+                padding: "8px 12px",
+                borderRadius: "8px",
+                cursor: "pointer",
+                fontWeight: 600,
+              }}
+            >
+              My Reports
+            </button>
+
+            <button
+              className="logout-btn"
+              onClick={handleLogout}
+              style={{ background: "#ff4757", color: "#fff", border: "none", padding: "8px 12px", borderRadius: "6px", cursor: "pointer", marginLeft: 8 }}
+            >
+              Logout
+            </button>
+          </div>
         </div>
 
         {/* Student profile (class & syllabus) */}
@@ -331,359 +446,411 @@ const StudentDashboard = () => {
           </div>
         </div>
 
-        {/* Filters */}
-        <div
-          style={{
-            marginTop: "20px",
-            background: "#ffffff22",
-            padding: "15px",
-            borderRadius: "10px",
-            display: "grid",
-            gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
-            gap: "15px",
-          }}
-        >
-          {/* Package Type */}
-          <div>
-            <label className="lbl" style={{ display: "block", marginBottom: "6px", color: "#fff" }}>
-              Package Type
-            </label>
-            <select
-              className="sel"
-              value={selectedType}
-              onChange={(e) => {
-                setSelectedType(e.target.value);
-                setSelectedPackageName("");
-                setSelectedSubject("");
-                setSelectedSubtopic("");
-                setSelectedChapter("");
-              }}
-              style={{ width: "100%", padding: "8px", borderRadius: "6px" }}
-            >
-              <option value="">— Select Type —</option>
-              {packageTypes.map((t) => (
-                <option key={t} value={t}>
-                  {t}
-                </option>
-              ))}
-            </select>
-          </div>
+        {/* If Reports tab active -> show reports UI */}
+        {activeTab === "reports" && (
+          <div style={{ marginTop: 20, background: "#ffffff14", padding: 16, borderRadius: 10 }}>
+            <h2 style={{ color: "#fff", marginBottom: 12 }}>📑 My Payment Reports</h2>
 
-          {/* Package Name */}
-          {selectedType && packageNameOptions.length > 0 && (
-            <div>
-              <label className="lbl" style={{ display: "block", marginBottom: "6px", color: "#fff" }}>
-                Package Name
-              </label>
-              <select
-                className="sel"
-                value={selectedPackageName}
-                onChange={(e) => {
-                  setSelectedPackageName(e.target.value);
-                  setSelectedSubject("");
-                  setSelectedSubtopic("");
-                  setSelectedChapter("");
-                }}
-                style={{ width: "100%", padding: "8px", borderRadius: "6px" }}
-              >
-                <option value="">— Select Package —</option>
-                {packageNameOptions.map((n) => (
-                  <option key={n} value={n}>
-                    {n}
-                  </option>
-                ))}
-              </select>
-            </div>
-          )}
-
-          {/* Concept-based filters */}
-          {isConceptPackageName(selectedPackageName) && subjectOptions.length > 0 && (
-            <div>
-              <label className="lbl" style={{ display: "block", marginBottom: "6px", color: "#fff" }}>
-                Subject
-              </label>
-              <select
-                className="sel"
-                value={selectedSubject}
-                onChange={(e) => {
-                  setSelectedSubject(e.target.value);
-                  setSelectedSubtopic("");
-                  setSelectedChapter("");
-                }}
-                style={{ width: "100%", padding: "8px", borderRadius: "6px" }}
-              >
-                <option value="">— Select Subject —</option>
-                {subjectOptions.map((s) => (
-                  <option key={s} value={s}>
-                    {s}
-                  </option>
-                ))}
-              </select>
-            </div>
-          )}
-
-          {isConceptPackageName(selectedPackageName) && selectedSubject && subtopicOptions.length > 0 && (
-            <div>
-              <label className="lbl" style={{ display: "block", marginBottom: "6px", color: "#fff" }}>
-                Subtopic
-              </label>
-              <select
-                className="sel"
-                value={selectedSubtopic}
-                onChange={(e) => {
-                  setSelectedSubtopic(e.target.value);
-                  setSelectedChapter("");
-                }}
-                style={{ width: "100%", padding: "8px", borderRadius: "6px" }}
-              >
-                <option value="">— Select Subtopic —</option>
-                {subtopicOptions.map((s) => (
-                  <option key={s} value={s}>
-                    {s}
-                  </option>
-                ))}
-              </select>
-            </div>
-          )}
-
-          {isConceptPackageName(selectedPackageName) && selectedSubtopic && chapterOptions.length > 0 && (
-            <div>
-              <label className="lbl" style={{ display: "block", marginBottom: "6px", color: "#fff" }}>
-                Chapter
-              </label>
-              <select
-                className="sel"
-                value={selectedChapter}
-                onChange={(e) => setSelectedChapter(e.target.value)}
-                style={{ width: "100%", padding: "8px", borderRadius: "6px" }}
-              >
-                <option value="">— Select Chapter —</option>
-                {chapterOptions.map((c) => (
-                  <option key={c} value={c}>
-                    {c}
-                  </option>
-                ))}
-              </select>
-            </div>
-          )}
-        </div>
-
-        {/* Cards */}
-        {selectedPackageName && (
-          <>
-            <h2 style={{ marginTop: 20, color: "white" }}>{selectedType === "Interactive Class" ? "Available Classes" : "Available Tests"}</h2>
-            {conceptCards.length === 0 ? (
-              <p style={{ color: "#fff" }}>
-                {isConceptPackageName(selectedPackageName) ? "Select Subject → Subtopic → Chapter to view items." : "No items found."}
-              </p>
+            {loadingReports ? (
+              <p style={{ color: "#fff" }}>Loading reports...</p>
+            ) : studentReports.length === 0 ? (
+              <p style={{ color: "#fff" }}>No payment records found.</p>
             ) : (
-              <div
-                className="packages-grid"
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))",
-                  gap: "16px",
-                  marginTop: "20px",
-                }}
-              >
-                {conceptCards.map((pkg) => {
-                  const subj = normalizeSubject(pkg.subject) || "Default";
-                  const { basePrice, finalPrice, d1, d2 } = computeFinalPrice(pkg);
+              <div style={{ overflowX: "auto" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", color: "#fff", minWidth: 680 }}>
+                  <thead>
+                    <tr style={{ textAlign: "left", borderBottom: "1px solid rgba(255,255,255,0.06)" }}>
+                      <th style={{ padding: "8px 6px" }}>Package</th>
+                      <th style={{ padding: "8px 6px" }}>Subject</th>
+                      <th style={{ padding: "8px 6px" }}>Amount (₹)</th>
+                      <th style={{ padding: "8px 6px" }}>Date</th>
+                      <th style={{ padding: "8px 6px" }}>Status</th>
+                      <th style={{ padding: "8px 6px" }}>Promoter Approved</th>
+                      <th style={{ padding: "8px 6px" }}>Payment ID</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {studentReports.map((r) => (
+                      <tr key={r.id} style={{ borderBottom: "1px solid rgba(255,255,255,0.04)" }}>
+                        <td style={{ padding: "10px 6px", color: "#e6eef8" }}>{r.packageName || r.package || "—"}</td>
+                        <td style={{ padding: "10px 6px", color: "#e6eef8" }}>{r.subject || "—"}</td>
+                        <td style={{ padding: "10px 6px", color: "#e6eef8", fontWeight: 700 }}>{Number(r.amount || 0).toFixed(2)}</td>
+                        <td style={{ padding: "10px 6px", color: "#e6eef8" }}>{r.paymentDate ? new Date(r.paymentDate).toLocaleString("en-IN") : r.createdAt ? new Date(r.createdAt).toLocaleString("en-IN") : "—"}</td>
+                        <td style={{ padding: "10px 6px", color: r.paymentStatus === "Paid" ? "#bbf7d0" : "#fda4af", fontWeight: 700 }}>{r.paymentStatus || "—"}</td>
+                        <td style={{ padding: "10px 6px", color: "#e6eef8" }}>{r.promoterApproved ? "✅" : "❌"}</td>
+                        <td style={{ padding: "10px 6px", color: "#e6eef8", fontSize: 12 }}>{r.paymentId || r.paymentID || "—"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        )}
 
-                  // compute duration & rates
-                  const durationNum = parseFloat(pkg.duration) || 0;
-                  const rateBefore = durationNum > 0 ? basePrice / durationNum : null;
-                  const rateAfter = durationNum > 0 ? finalPrice / durationNum : null;
+        {/* Filters (shown only when shop view is active) */}
+        {activeTab === "shop" && (
+          <>
+            {/* Filters */}
+            <div
+              style={{
+                marginTop: "20px",
+                background: "#ffffff22",
+                padding: "15px",
+                borderRadius: "10px",
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
+                gap: "15px",
+              }}
+            >
+              {/* Package Type */}
+              <div>
+                <label className="lbl" style={{ display: "block", marginBottom: "6px", color: "#fff" }}>
+                  Package Type
+                </label>
+                <select
+                  className="sel"
+                  value={selectedType}
+                  onChange={(e) => {
+                    setSelectedType(e.target.value);
+                    setSelectedPackageName("");
+                    setSelectedSubject("");
+                    setSelectedSubtopic("");
+                    setSelectedChapter("");
+                  }}
+                  style={{ width: "100%", padding: "8px", borderRadius: "6px" }}
+                >
+                  <option value="">— Select Type —</option>
+                  {packageTypes.map((t) => (
+                    <option key={t} value={t}>
+                      {t}
+                    </option>
+                  ))}
+                </select>
+              </div>
 
-                  // freebies may be a string or array in your DB; normalize to string
-                  const freebiesText = Array.isArray(pkg.freebies) ? pkg.freebies.join(", ") : (pkg.freebies || "").toString();
+              {/* Package Name */}
+              {selectedType && packageNameOptions.length > 0 && (
+                <div>
+                  <label className="lbl" style={{ display: "block", marginBottom: "6px", color: "#fff" }}>
+                    Package Name
+                  </label>
+                  <select
+                    className="sel"
+                    value={selectedPackageName}
+                    onChange={(e) => {
+                      setSelectedPackageName(e.target.value);
+                      setSelectedSubject("");
+                      setSelectedSubtopic("");
+                      setSelectedChapter("");
+                    }}
+                    style={{ width: "100%", padding: "8px", borderRadius: "6px" }}
+                  >
+                    <option value="">— Select Package —</option>
+                    {packageNameOptions.map((n) => (
+                      <option key={n} value={n}>
+                        {n}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
 
-                  const totalDiscount = Math.round((d1 || 0) + (d2 || 0));
+              {/* Concept-based filters */}
+              {isConceptPackageName(selectedPackageName) && subjectOptions.length > 0 && (
+                <div>
+                  <label className="lbl" style={{ display: "block", marginBottom: "6px", color: "#fff" }}>
+                    Subject
+                  </label>
+                  <select
+                    className="sel"
+                    value={selectedSubject}
+                    onChange={(e) => {
+                      setSelectedSubject(e.target.value);
+                      setSelectedSubtopic("");
+                      setSelectedChapter("");
+                    }}
+                    style={{ width: "100%", padding: "8px", borderRadius: "6px" }}
+                  >
+                    <option value="">— Select Subject —</option>
+                    {subjectOptions.map((s) => (
+                      <option key={s} value={s}>
+                        {s}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
 
-                  return (
-                    <div
-                      key={pkg.id}
-                      className={`zoom-card card-${subj.toLowerCase().replace(/\s+/g, "") || "default"}`}
-                      style={{
-                        borderRadius: "12px",
-                        padding: "15px",
-                        color: "#333",
-                        fontSize: "14px",
-                        boxShadow: "0 6px 20px rgba(0,0,0,0.3)",
-                        background: "#fff",
-                        transition: "transform 0.2s, box-shadow 0.2s",
-                        display: "flex",
-                        flexDirection: "column",
-                        justifyContent: "space-between",
-                        position: "relative",
-                        overflow: "hidden",
-                      }}
-                    >
-                      {/* TOP-LEFT RATE STICKER — midnight black with neon green highlight */}
-                      <div
-                        style={{
-                          position: "absolute",
-                          top: "auto",
-                          bottom: 16,
-                          left: "50%",
-                          transform: "translateX(-50%)",
-                          background: "#05060A", // deep midnight-black feel
-                          color: "#b7ffd6", // soft neon-ish green for text contrast
-                          padding: "8px 10px",
-                          borderRadius: "10px",
-                          fontSize: "12px",
-                          fontWeight: 700,
-                          zIndex: 6,
-                          boxShadow: "0 8px 24px rgba(0,255,150,0.06), 0 4px 10px rgba(0,0,0,0.5)",
-                          border: "1px solid rgba(0,255,150,0.12)",
-                          display: "flex",
-                          flexDirection: "column",
-                          alignItems: "flex-start",
-                          lineHeight: 1.05,
-                        }}
-                        aria-hidden
-                      >
-                        {/* Was price (line-through) */}
-                        <span style={{ fontSize: "11px", color: "#9ca3af", textDecoration: rateBefore ? "line-through" : "none", marginBottom: 4 }}>
-                          {rateBefore !== null ? `Was ₹${Number(rateBefore).toFixed(2)}/hr` : "Was —"}
-                        </span>
+              {isConceptPackageName(selectedPackageName) && selectedSubject && subtopicOptions.length > 0 && (
+                <div>
+                  <label className="lbl" style={{ display: "block", marginBottom: "6px", color: "#fff" }}>
+                    Subtopic
+                  </label>
+                  <select
+                    className="sel"
+                    value={selectedSubtopic}
+                    onChange={(e) => {
+                      setSelectedSubtopic(e.target.value);
+                      setSelectedChapter("");
+                    }}
+                    style={{ width: "100%", padding: "8px", borderRadius: "6px" }}
+                  >
+                    <option value="">— Select Subtopic —</option>
+                    {subtopicOptions.map((s) => (
+                      <option key={s} value={s}>
+                        {s}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
 
-                        {/* Now price (neon green) */}
-                        <span style={{ fontSize: "13px", color: "#7CFF8E", fontWeight: 900 }}>
-                          {rateAfter !== null ? `Now ₹${Number(rateAfter).toFixed(2)}/hr` : "Now —"}
-                        </span>
-                      </div>
+              {isConceptPackageName(selectedPackageName) && selectedSubtopic && chapterOptions.length > 0 && (
+                <div>
+                  <label className="lbl" style={{ display: "block", marginBottom: "6px", color: "#fff" }}>
+                    Chapter
+                  </label>
+                  <select
+                    className="sel"
+                    value={selectedChapter}
+                    onChange={(e) => setSelectedChapter(e.target.value)}
+                    style={{ width: "100%", padding: "8px", borderRadius: "6px" }}
+                  >
+                    <option value="">— Select Chapter —</option>
+                    {chapterOptions.map((c) => (
+                      <option key={c} value={c}>
+                        {c}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+            </div>
 
-                      {/* Discount badge */}
-                      {totalDiscount > 0 && (
+            {/* Cards */}
+            {selectedPackageName && (
+              <>
+                <h2 style={{ marginTop: 20, color: "white" }}>{selectedType === "Interactive Class" ? "Available Classes" : "Available Tests"}</h2>
+                {conceptCards.length === 0 ? (
+                  <p style={{ color: "#fff" }}>
+                    {isConceptPackageName(selectedPackageName) ? "Select Subject → Subtopic → Chapter to view items." : "No items found."}
+                  </p>
+                ) : (
+                  <div
+                    className="packages-grid"
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))",
+                      gap: "16px",
+                      marginTop: "20px",
+                    }}
+                  >
+                    {conceptCards.map((pkg) => {
+                      const subj = normalizeSubject(pkg.subject) || "Default";
+                      const { basePrice, finalPrice, d1, d2 } = computeFinalPrice(pkg);
+
+                      // compute duration & rates
+                      const durationNum = parseFloat(pkg.duration) || 0;
+                      const rateBefore = durationNum > 0 ? basePrice / durationNum : null;
+                      const rateAfter = durationNum > 0 ? finalPrice / durationNum : null;
+
+                      // freebies may be a string or array in your DB; normalize to string
+                      const freebiesText = Array.isArray(pkg.freebies) ? pkg.freebies.join(", ") : (pkg.freebies || "").toString();
+
+                      const totalDiscount = Math.round((d1 || 0) + (d2 || 0));
+
+                      return (
                         <div
+                          key={pkg.id}
+                          className={`zoom-card card-${subj.toLowerCase().replace(/\s+/g, "") || "default"}`}
                           style={{
-                            position: "absolute",
-                            top: "10px",
-                            right: "10px",
-                            background: totalDiscount >= 40 ? "#e11d48" : totalDiscount >= 20 ? "#f97316" : "#16a34a",
-                            color: "#fff",
-                            padding: "4px 8px",
-                            borderRadius: "6px",
-                            fontSize: "12px",
-                            fontWeight: "700",
-                            boxShadow: "0 2px 6px rgba(0,0,0,0.15)",
-                            zIndex: 3,
+                            borderRadius: "12px",
+                            padding: "15px",
+                            color: "#333",
+                            fontSize: "14px",
+                            boxShadow: "0 6px 20px rgba(0,0,0,0.3)",
+                            background: "#fff",
+                            transition: "transform 0.2s, box-shadow 0.2s",
+                            display: "flex",
+                            flexDirection: "column",
+                            justifyContent: "space-between",
+                            position: "relative",
+                            overflow: "hidden",
                           }}
                         >
-                          {totalDiscount}% OFF
-                        </div>
-                      )}
-
-                      <div className="zoom-card-inner" style={{ textAlign: "center", zIndex: 2 }}>
-                        <img
-                          src={subjectImages[subj] || subjectImages.Default}
-                          alt={subj}
-                          style={{
-                            width: "80px",
-                            height: "80px",
-                            objectFit: "contain",
-                            marginBottom: "8px",
-                            borderRadius: "10px",
-                            backgroundColor: "rgba(255,255,255,0.05)",
-                          }}
-                        />
-                        <h3 style={{ fontSize: "16px", fontWeight: "600", color: "#222", marginBottom: "4px" }}>
-                          {pkg.concept || pkg.packageName}
-                        </h3>
-                        <span style={{ display: "block", fontSize: "13px", marginBottom: "10px", color: "#555" }}>
-                          {subj} {pkg.subtopic ? "→ " + pkg.subtopic + " → " : ""}{pkg.chapter}
-                        </span>
-
-                        {/* Course Details */}
-                        <div
-                          style={{
-                            textAlign: "left",
-                            fontSize: "13px",
-                            color: "#444",
-                            marginBottom: "10px",
-                            lineHeight: "1.4em",
-                          }}
-                        >
-                          {/* Use available fields: courseDetails, description, duration, perHour; fallbacks if not present */}
-                          {pkg.courseDetails && (
-                            <p style={{ margin: "4px 0" }}>
-                              <b>Course:</b> {pkg.courseDetails}
-                            </p>
-                          )}
-                          {!pkg.courseDetails && pkg.description && (
-                            <p style={{ margin: "4px 0" }}>
-                              <b>About:</b> {pkg.description.length > 80 ? pkg.description.slice(0, 80) + "..." : pkg.description}
-                            </p>
-                          )}
-                          {pkg.duration && (
-                            <p style={{ margin: "4px 0" }}>
-                              <b>Duration:</b> {pkg.duration} hrs
-                            </p>
-                          )}
-                          {pkg.perHour && (
-                            <p style={{ margin: "4px 0" }}>
-                              <b>Rate (stored):</b> ₹{pkg.perHour}/hr
-                            </p>
-                          )}
-
-                          {/* Freebies */}
-                          {freebiesText && freebiesText.trim() !== "" && (
-                            <p style={{ margin: "6px 0 0 0", color: "#0f172a", background: "#f1f5f9", padding: "6px", borderRadius: "6px" }}>
-                              <strong style={{ marginRight: 6 }}>🎁 Freebies:</strong>
-                              <span style={{ fontWeight: 500 }}>{freebiesText.length > 80 ? freebiesText.slice(0, 80) + "..." : freebiesText}</span>
-                            </p>
-                          )}
-                        </div>
-
-                        {/* Price Section */}
-                        <div style={{ textAlign: "left", marginTop: "8px" }}>
-                          <p style={{ margin: "2px 0" }}>
-                            <b>Price:</b>{" "}
-                            <span style={{ textDecoration: d1 || d2 ? "line-through" : "none" }}>
-                              ₹{basePrice.toFixed(2)}
+                          {/* PRICE STICKER — bottom-left (fixed) */}
+                          <div
+                            style={{
+                              position: "absolute",
+                              bottom: 16,
+                              left: 16,
+                              transform: "none",
+                              background: "#05060A",
+                              color: "#b7ffd6",
+                              padding: "8px 10px",
+                              borderRadius: "10px",
+                              fontSize: "12px",
+                              fontWeight: 700,
+                              zIndex: 6,
+                              boxShadow: "0 8px 24px rgba(0,255,150,0.06), 0 4px 10px rgba(0,0,0,0.5)",
+                              border: "1px solid rgba(0,255,150,0.12)",
+                              display: "flex",
+                              flexDirection: "column",
+                              alignItems: "flex-start",
+                              lineHeight: 1.05,
+                            }}
+                            aria-hidden
+                          >
+                            <span style={{ fontSize: "11px", color: "#9ca3af", textDecoration: rateBefore ? "line-through" : "none", marginBottom: 4 }}>
+                              {rateBefore !== null ? `Was ₹${Number(rateBefore).toFixed(2)}/hr` : "Was —"}
                             </span>
-                          </p>
-                          {(d1 || d2) && (
-                            <p style={{ margin: "2px 0", color: "#16a34a", fontWeight: "700" }}>
-                              <b>Now:</b> ₹{finalPrice.toFixed(2)}
-                            </p>
-                          )}
+                            <span style={{ fontSize: "13px", color: "#7CFF8E", fontWeight: 900 }}>
+                              {rateAfter !== null ? `Now ₹${Number(rateAfter).toFixed(2)}/hr` : "Now —"}
+                            </span>
+                          </div>
 
-                          {/* Discount breakdown */}
-                          {(d1 > 0 || d2 > 0) && (
-                            <div style={{ marginTop: "6px", fontSize: "13px", color: "#e11d48" }}>
-                              <div>
-                                <b>Discounts:</b>{" "}
-                                {d1 > 0 && <span>{d1}% regular</span>}
-                                {d1 > 0 && d2 > 0 && <span> + </span>}
-                                {d2 > 0 && <span>{d2}% additional</span>}
-                              </div>
+                          {/* Discount badge */}
+                          {totalDiscount > 0 && (
+                            <div
+                              style={{
+                                position: "absolute",
+                                top: "10px",
+                                right: "10px",
+                                background: totalDiscount >= 40 ? "#e11d48" : totalDiscount >= 20 ? "#f97316" : "#16a34a",
+                                color: "#fff",
+                                padding: "4px 8px",
+                                borderRadius: "6px",
+                                fontSize: "12px",
+                                fontWeight: "700",
+                                boxShadow: "0 2px 6px rgba(0,0,0,0.15)",
+                                zIndex: 3,
+                              }}
+                            >
+                              {totalDiscount}% OFF
                             </div>
                           )}
-                        </div>
 
-                        {/* Add to Cart */}
-                        <button
-                          onClick={() => addToCart(pkg)}
-                          style={{
-                            marginTop: "12px",
-                            padding: "8px 14px",
-                            background: "#1e90ff",
-                            color: "#fff",
-                            border: "none",
-                            borderRadius: "6px",
-                            cursor: "pointer",
-                            fontWeight: "600",
-                          }}
-                        >
-                          Add to Cart
-                        </button>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
+                          <div
+                            className="zoom-card-inner"
+                            style={{
+                              textAlign: "center",
+                              zIndex: 2,
+                              paddingBottom: 72 /* make room for sticker + add button so they don't overlap content */,
+                            }}
+                          >
+                            <img
+                              src={subjectImages[subj] || subjectImages.Default}
+                              alt={subj}
+                              style={{
+                                width: "80px",
+                                height: "80px",
+                                objectFit: "contain",
+                                marginBottom: "8px",
+                                borderRadius: "10px",
+                                backgroundColor: "rgba(255,255,255,0.05)",
+                              }}
+                            />
+                            <h3 style={{ fontSize: "16px", fontWeight: "600", color: "#222", marginBottom: "4px" }}>
+                              {pkg.concept || pkg.packageName}
+                            </h3>
+                            <span style={{ display: "block", fontSize: "13px", marginBottom: "10px", color: "#555" }}>
+                              {subj} {pkg.subtopic ? "→ " + pkg.subtopic + " → " : ""}{pkg.chapter}
+                            </span>
+
+                            {/* Course Details */}
+                            <div
+                              style={{
+                                textAlign: "left",
+                                fontSize: "13px",
+                                color: "#444",
+                                marginBottom: "10px",
+                                lineHeight: "1.4em",
+                              }}
+                            >
+                              {/* Use available fields: courseDetails, description, duration, perHour; fallbacks if not present */}
+                              {pkg.courseDetails && (
+                                <p style={{ margin: "4px 0" }}>
+                                  <b>Course:</b> {pkg.courseDetails}
+                                </p>
+                              )}
+                              {!pkg.courseDetails && pkg.description && (
+                                <p style={{ margin: "4px 0" }}>
+                                  <b>About:</b> {pkg.description.length > 80 ? pkg.description.slice(0, 80) + "..." : pkg.description}
+                                </p>
+                              )}
+                              {pkg.duration && (
+                                <p style={{ margin: "4px 0" }}>
+                                  <b>Duration:</b> {pkg.duration} hrs
+                                </p>
+                              )}
+                              {pkg.perHour && (
+                                <p style={{ margin: "4px 0" }}>
+                                  <b>Rate (stored):</b> ₹{pkg.perHour}/hr
+                                </p>
+                              )}
+
+                              {/* Freebies */}
+                              {freebiesText && freebiesText.trim() !== "" && (
+                                <p style={{ margin: "6px 0 0 0", color: "#0f172a", background: "#f1f5f9", padding: "6px", borderRadius: "6px" }}>
+                                  <strong style={{ marginRight: 6 }}>🎁 Freebies:</strong>
+                                  <span style={{ fontWeight: 500 }}>{freebiesText.length > 80 ? freebiesText.slice(0, 80) + "..." : freebiesText}</span>
+                                </p>
+                              )}
+                            </div>
+
+                            {/* Price Section (inside card body, not the sticker) */}
+                            <div style={{ textAlign: "left", marginTop: "8px" }}>
+                              <p style={{ margin: "2px 0" }}>
+                                <b>Price:</b>{" "}
+                                <span style={{ textDecoration: d1 || d2 ? "line-through" : "none" }}>
+                                  ₹{basePrice.toFixed(2)}
+                                </span>
+                              </p>
+                              {(d1 || d2) && (
+                                <p style={{ margin: "2px 0", color: "#16a34a", fontWeight: "700" }}>
+                                  <b>Now:</b> ₹{finalPrice.toFixed(2)}
+                                </p>
+                              )}
+
+                              {/* Discount breakdown */}
+                              {(d1 > 0 || d2 > 0) && (
+                                <div style={{ marginTop: "6px", fontSize: "13px", color: "#e11d48" }}>
+                                  <div>
+                                    <b>Discounts:</b>{" "}
+                                    {d1 > 0 && <span>{d1}% regular</span>}
+                                    {d1 > 0 && d2 > 0 && <span> + </span>}
+                                    {d2 > 0 && <span>{d2}% additional</span>}
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* ADD TO CART — bottom-right (fixed) */}
+                          <div style={{ position: "absolute", bottom: 16, right: 16, zIndex: 6 }}>
+                            <button
+                              onClick={() => addToCart(pkg)}
+                              style={{
+                                padding: "8px 14px",
+                                background: "#1e90ff",
+                                color: "#fff",
+                                border: "none",
+                                borderRadius: "6px",
+                                cursor: "pointer",
+                                fontWeight: "600",
+                                boxShadow: "0 6px 14px rgba(30,144,255,0.18)"
+                              }}
+                            >
+                              Add to Cart
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </>
             )}
           </>
         )}
@@ -821,7 +988,7 @@ const StudentDashboard = () => {
           @media (max-width: 900px) {
             .student-dashboard {
               flex-direction: column;
-              padding-bottom: 180px; /* ensure space for bottom action bar */
+              padding-bottom: 220px; /* ensure space for bottom action bar and sticky buttons */
             }
 
             .student-dashboard > div:nth-child(2) {
@@ -852,6 +1019,11 @@ const StudentDashboard = () => {
               width: 70px !important;
               height: 70px !important;
             }
+
+            /* Adjust sticker and add-to-cart positions on small screens so they don't cover content */
+            .zoom-card {
+              padding-bottom: 80px; /* provide extra space inside card for fixed elements */
+            }
           }
 
           /* Ensure bottom fixed actions don't block content touch events and appear above everything */
@@ -872,7 +1044,7 @@ const StudentDashboard = () => {
               height: 60px !important;
             }
 
-            /* make badge slightly smaller on very small screens */
+            /* make sticker and button slightly smaller on very small screens */
             .zoom-card div[aria-hidden] {
               transform: scale(0.92);
               left: 8px !important;

@@ -9,6 +9,9 @@ import ApprovePromoter from "./pages/ApprovePromoter";
 import PromoterDatabase from "./pages/PromoterDatabase";
 import StudentDatabase from "./pages/StudentDatabase";
 
+// 🔹 Correct page name as per your setup
+import PromoterStudents from "./pages/PromoterStudents";
+
 // Policy Pages
 import Terms from "./pages/Terms";
 import Privacy from "./pages/Privacy";
@@ -30,6 +33,7 @@ function Layout() {
     "/approve-promoter",
     "/promoter-database",
     "/student-database",
+    "/promoter-students",
   ];
 
   const shouldShowFooter = !hideFooterRoutes.some((path) =>
@@ -40,7 +44,10 @@ function Layout() {
     <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column" }}>
       <div style={{ flex: 1 }}>
         <Routes>
+          {/* Auth */}
           <Route path="/" element={<SignInPage />} />
+
+          {/* Dashboards */}
           <Route path="/student-dashboard" element={<StudentDashboard />} />
           <Route path="/promoter-dashboard" element={<PromoterDashboard />} />
           <Route path="/admin-dashboard" element={<AdminDashboard />} />
@@ -48,7 +55,13 @@ function Layout() {
           <Route path="/promoter-database" element={<PromoterDatabase />} />
           <Route path="/student-database" element={<StudentDatabase />} />
 
-          {/* Policy Routes */}
+          {/* 🔹 Promoter’s tagged students */}
+          <Route
+            path="/promoter-students/:promoterId"
+            element={<PromoterStudents />}
+          />
+
+          {/* Policy Pages */}
           <Route path="/terms" element={<Terms />} />
           <Route path="/privacy" element={<Privacy />} />
           <Route path="/refund" element={<Refund />} />

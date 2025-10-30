@@ -1,3 +1,4 @@
+// src/pages/StudentDatabase.jsx
 import React, { useEffect, useState } from "react";
 import { db } from "../firebase/firebaseConfig";
 import { collection, getDocs } from "firebase/firestore";
@@ -8,14 +9,14 @@ export default function StudentDatabase() {
   const [loading, setLoading] = useState(true);
   const navigate = useNavigate();
 
-  // ✅ Fetch students
+  // ✅ Fetch students from Firestore
   useEffect(() => {
     const fetchStudents = async () => {
       try {
         const userSnap = await getDocs(collection(db, "users"));
         const studentData = userSnap.docs
-          .map(doc => ({ id: doc.id, ...doc.data() }))
-          .filter(user => user.role === "student" || user.role === "parent");
+          .map((doc) => ({ id: doc.id, ...doc.data() }))
+          .filter((user) => user.role === "student" || user.role === "parent");
         setStudents(studentData);
       } catch (error) {
         console.error("Error fetching students:", error);
@@ -31,13 +32,13 @@ export default function StudentDatabase() {
       <p
         style={{
           textAlign: "center",
-          marginTop: 40,
+          marginTop: 50,
           fontSize: 18,
-          fontWeight: "600",
-          color: "#555",
+          fontWeight: 600,
+          color: "#4A5568",
         }}
       >
-        Loading students...
+        Loading student database...
       </p>
     );
 
@@ -48,6 +49,7 @@ export default function StudentDatabase() {
     borderRadius: 10,
     overflow: "hidden",
     backgroundColor: "#fff",
+    fontSize: 14,
   };
 
   const thStyle = {
@@ -57,13 +59,15 @@ export default function StudentDatabase() {
     fontSize: 15,
     color: "#fff",
     background: "linear-gradient(90deg, #319795, #38B2AC)",
-    borderBottom: "2px solid #ddd",
+    position: "sticky",
+    top: 0,
+    zIndex: 2,
   };
 
   const tdStyle = {
-    padding: "12px 16px",
+    padding: "12px 14px",
     borderBottom: "1px solid #E2E8F0",
-    fontSize: 14,
+    wordBreak: "break-word",
   };
 
   const buttonStyle = {
@@ -75,7 +79,6 @@ export default function StudentDatabase() {
     border: "none",
     borderRadius: 6,
     cursor: "pointer",
-    transition: "background-color 0.3s",
   };
 
   const formatCurrency = (amount) => {
@@ -86,7 +89,7 @@ export default function StudentDatabase() {
   return (
     <div
       style={{
-        padding: 24,
+        padding: 20,
         backgroundColor: "#E6FFFA",
         minHeight: "100vh",
       }}
@@ -108,19 +111,25 @@ export default function StudentDatabase() {
       <h1
         style={{
           textAlign: "center",
-          fontSize: 32,
-          fontWeight: "800",
+          fontSize: 30,
+          fontWeight: 800,
           background: "linear-gradient(90deg, #319795, #38B2AC)",
           WebkitBackgroundClip: "text",
           color: "transparent",
-          marginBottom: 24,
+          marginBottom: 25,
         }}
       >
-        Student Database
+        Student Database & Payment Details
       </h1>
 
       {/* ✅ Table Section */}
-      <div style={{ overflowX: "auto" }}>
+      <div
+        style={{
+          overflowX: "auto",
+          backgroundColor: "#fff",
+          borderRadius: 10,
+        }}
+      >
         <table style={tableStyle}>
           <thead>
             <tr>
@@ -133,10 +142,15 @@ export default function StudentDatabase() {
               <th style={thStyle}>Actual Cost</th>
               <th style={thStyle}>Discount</th>
               <th style={thStyle}>Paid Amount</th>
+              <th style={thStyle}>Payment Mode</th>
+              <th style={thStyle}>Transaction ID</th>
               <th style={thStyle}>Payment Status</th>
               <th style={thStyle}>Purchase Date</th>
+              <th style={thStyle}>Promoter ID</th>
+              <th style={thStyle}>Referral Code</th>
             </tr>
           </thead>
+
           <tbody>
             {students.length > 0 ? (
               students.map((s, idx) => {
@@ -152,7 +166,7 @@ export default function StudentDatabase() {
                   <tr
                     key={s.id}
                     style={{
-                      backgroundColor: idx % 2 === 0 ? "#fff" : "#F1FAFC",
+                      backgroundColor: idx % 2 === 0 ? "#FFFFFF" : "#F0FFF4",
                       transition: "background-color 0.3s",
                     }}
                     onMouseEnter={(e) =>
@@ -160,16 +174,10 @@ export default function StudentDatabase() {
                     }
                     onMouseLeave={(e) =>
                       (e.currentTarget.style.backgroundColor =
-                        idx % 2 === 0 ? "#fff" : "#F1FAFC")
+                        idx % 2 === 0 ? "#FFFFFF" : "#F0FFF4")
                     }
                   >
-                    <td
-                      style={{
-                        ...tdStyle,
-                        color: "#2C7A7B",
-                        fontWeight: "600",
-                      }}
-                    >
+                    <td style={{ ...tdStyle, fontWeight: 600, color: "#2C7A7B" }}>
                       {s.name || "-"}
                     </td>
                     <td style={{ ...tdStyle, color: "#285E61" }}>
@@ -183,8 +191,7 @@ export default function StudentDatabase() {
                       style={{
                         ...tdStyle,
                         textAlign: "right",
-                        color: "#1E293B",
-                        fontWeight: "600",
+                        fontWeight: 600,
                       }}
                     >
                       {formatCurrency(actualCost)}
@@ -194,7 +201,7 @@ export default function StudentDatabase() {
                         ...tdStyle,
                         textAlign: "right",
                         color: "#16A34A",
-                        fontWeight: "600",
+                        fontWeight: 600,
                       }}
                     >
                       {formatCurrency(discount)}
@@ -204,16 +211,20 @@ export default function StudentDatabase() {
                         ...tdStyle,
                         textAlign: "right",
                         color: "#DD6B20",
-                        fontWeight: "700",
+                        fontWeight: 700,
                       }}
                     >
                       {formatCurrency(paidAmount)}
                     </td>
+                    <td style={tdStyle}>{s.paymentMode || "-"}</td>
+                    <td style={{ ...tdStyle, color: "#1E40AF" }}>
+                      {s.transactionId || "-"}
+                    </td>
                     <td
                       style={{
                         ...tdStyle,
-                        fontWeight: "700",
                         color: status === "Paid in Full" ? "green" : "#EAB308",
+                        fontWeight: 700,
                       }}
                     >
                       {status}
@@ -223,18 +234,20 @@ export default function StudentDatabase() {
                         ? s.createdAt.toDate().toLocaleString()
                         : "-"}
                     </td>
+                    <td style={tdStyle}>{s.promoterId || "-"}</td>
+                    <td style={tdStyle}>{s.referralCode || "-"}</td>
                   </tr>
                 );
               })
             ) : (
               <tr>
                 <td
-                  colSpan="11"
+                  colSpan="15"
                   style={{
                     padding: 24,
                     textAlign: "center",
                     color: "#718096",
-                    fontWeight: "600",
+                    fontWeight: 600,
                     fontSize: 16,
                   }}
                 >

@@ -1,3 +1,4 @@
+// src/pages/PromoterDatabase.jsx
 import React, { useEffect, useState, useRef } from "react";
 import { db } from "../firebase/firebaseConfig";
 import { collection, getDocs } from "firebase/firestore";
@@ -9,18 +10,14 @@ const PromoterDatabase = () => {
   const panelRef = useRef(null);
   const navigate = useNavigate();
 
-  // ✅ Fetch promoter data
+  // ✅ Fetch promoters
   useEffect(() => {
     const fetchPromoters = async () => {
       try {
-        const promoterCollection = collection(db, "users");
-        const snapshot = await getDocs(promoterCollection);
-
+        const snapshot = await getDocs(collection(db, "users"));
         const promoterList = snapshot.docs
           .map((doc) => ({ id: doc.id, ...doc.data() }))
-          .filter(
-            (p) => p.role === "promoter" || p.alsoPromoter === true
-          );
+          .filter((p) => p.role === "promoter" || p.alsoPromoter === true);
 
         setPromoters(promoterList);
       } catch (error) {
@@ -74,7 +71,7 @@ const PromoterDatabase = () => {
         position: "relative",
       }}
     >
-      {/* ✅ Header + Back Button */}
+      {/* ✅ Header */}
       <div
         style={{
           display: "flex",
@@ -183,7 +180,7 @@ const PromoterDatabase = () => {
         </table>
       </div>
 
-      {/* ✅ Right panel for selected promoter */}
+      {/* ✅ Right-side details panel */}
       {selectedPromoter && (
         <div
           ref={panelRef}
@@ -191,7 +188,7 @@ const PromoterDatabase = () => {
             position: "fixed",
             top: 0,
             right: 0,
-            width: "320px",
+            width: "340px",
             height: "100vh",
             backgroundColor: "#fff",
             boxShadow: "-2px 0 8px rgba(0,0,0,0.15)",
@@ -201,36 +198,39 @@ const PromoterDatabase = () => {
           }}
         >
           <h3 style={headerStyle}>Promoter Details</h3>
-          <p>
-            <b>Name:</b> {selectedPromoter.name}
-          </p>
-          <p>
-            <b>Email:</b> {selectedPromoter.email}
-          </p>
-          <p>
-            <b>Phone:</b> {selectedPromoter.phone}
-          </p>
-          <p>
-            <b>Unique ID:</b> {selectedPromoter.uniqueId}
-          </p>
-          <p>
-            <b>Business Area:</b> {selectedPromoter.businessArea}
-          </p>
-          <p>
-            <b>Total Commission:</b> ₹
-            {selectedPromoter.totalCommission || 0}
-          </p>
-          <p>
-            <b>Pending Amount:</b> ₹
-            {selectedPromoter.pendingAmount || 0}
-          </p>
+          <p><b>Name:</b> {selectedPromoter.name}</p>
+          <p><b>Email:</b> {selectedPromoter.email}</p>
+          <p><b>Phone:</b> {selectedPromoter.phone}</p>
+          <p><b>Unique ID:</b> {selectedPromoter.uniqueId}</p>
+          <p><b>Business Area:</b> {selectedPromoter.businessArea}</p>
+          <p><b>Total Commission:</b> ₹{selectedPromoter.totalCommission || 0}</p>
+          <p><b>Pending Amount:</b> ₹{selectedPromoter.pendingAmount || 0}</p>
           <p>
             <b>Status:</b>{" "}
             {selectedPromoter.pendingAmount === 0 ? "No Dues" : "Pending"}
           </p>
-          <p>
-            <b>Last Paid:</b> {selectedPromoter.lastPayment || "-"}
-          </p>
+          <p><b>Last Paid:</b> {selectedPromoter.lastPayment || "-"}</p>
+
+          {/* ✅ View Tagged Students Button */}
+          <button
+            style={{
+              background: "#0284c7",
+              color: "#fff",
+              border: "none",
+              borderRadius: "8px",
+              padding: "10px 16px",
+              cursor: "pointer",
+              marginTop: "10px",
+              width: "100%",
+            }}
+            onClick={() =>
+              navigate(`/promoter-students/${selectedPromoter.id}`, {
+                state: { promoter: selectedPromoter },
+              })
+            }
+          >
+            👥 View Tagged Students
+          </button>
         </div>
       )}
     </div>
