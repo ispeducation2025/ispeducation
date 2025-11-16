@@ -81,25 +81,46 @@ export default function AdminDashboard() {
   const [viewType, setViewType] = useState("packages"); // "packages" | "promoters" | "students"
   const [userFilterText, setUserFilterText] = useState("");
 
-  // --- Realtime fetch for packages and users ---
+  // NEW: payments & studentDatabase state (realtime)
+  const [paymentsList, setPaymentsList] = useState([]);
+  const [studentDatabaseList, setStudentDatabaseList] = useState([]);
+
+  // --- Realtime fetch for packages, users, payments, studentDatabase ---
   useEffect(() => {
-    // packages realtime (to preserve original fetchPackages behavior + live updates)
+    // packages realtime
     const packagesCol = collection(db, "packages");
     const unsubPackages = onSnapshot(packagesCol, (snap) => {
       const allPackages = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
       setPackages(allPackages);
     });
 
-    // users realtime (single collection "users" as in your sample)
+    // users realtime
     const usersCol = collection(db, "users");
     const unsubUsers = onSnapshot(usersCol, (snap) => {
       const allUsers = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
       setUsersList(allUsers);
     });
 
+    // payments realtime
+    const paymentsCol = collection(db, "payments");
+    const unsubPayments = onSnapshot(paymentsCol, (snap) => {
+      const allPayments = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      // normalize createdAt if Firestore Timestamp to ISO for easier sorting/display
+      setPaymentsList(allPayments);
+    });
+
+    // studentDatabase realtime (student-facing records)
+    const studentDbCol = collection(db, "studentDatabase");
+    const unsubStudentDb = onSnapshot(studentDbCol, (snap) => {
+      const all = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      setStudentDatabaseList(all);
+    });
+
     return () => {
       unsubPackages();
       unsubUsers();
+      unsubPayments();
+      unsubStudentDb();
     };
   }, []);
 
@@ -177,13 +198,17 @@ export default function AdminDashboard() {
       createdAt: new Date(),
     };
 
-    if (editingId) {
-      await updateDoc(doc(db, "packages", editingId), payload);
-    } else {
-      await addDoc(collection(db, "packages"), payload);
+    try {
+      if (editingId) {
+        await updateDoc(doc(db, "packages", editingId), payload);
+      } else {
+        await addDoc(collection(db, "packages"), payload);
+      }
+      resetForm();
+    } catch (err) {
+      console.error("Error saving package:", err);
+      alert("Failed to save package: " + (err.message || err));
     }
-
-    resetForm();
   };
 
   const startEdit = (pkg) => {
@@ -288,10 +313,9 @@ export default function AdminDashboard() {
     }
   };
 
-  // ---------- NEW helpers for Users / Promoters ----------
+  // ---------- NEW helpers for Users / Promoters / Payments ----------
   const formatDate = (ts) => {
     if (!ts) return "—";
-    // ts might be Firestore Timestamp or JS Date or ISO string
     try {
       if (ts.toDate) {
         return new Date(ts.toDate()).toLocaleString();
@@ -308,59 +332,7 @@ export default function AdminDashboard() {
   const promoters = usersList.filter((u) => u.role === "promoter" || u.alsoPromoter === true);
   const students = usersList.filter((u) => u.role === "student");
 
-  // Promo: compute payment status string
-  const paymentStatusForUser = (u) => {
-    if (u.promoterPaymentStatus) return u.promoterPaymentStatus;
-    return u.promoterLastPaidAt ? "paid" : "pending";
-  };
-
-  // Pay commission: create a payment record and update user doc fields
-  const payCommission = async (user) => {
-    try {
-      const amountRaw = window.prompt(`Enter amount to pay (INR) for ${user.name || user.email}:`);
-      if (amountRaw === null) return; // cancelled
-      const amount = parseFloat(amountRaw);
-      if (isNaN(amount) || amount <= 0) {
-        alert("Invalid amount.");
-        return;
-      }
-
-      // create payment record
-      await addDoc(collection(db, "promoterPayments"), {
-        userId: user.id || user.uid,
-        userName: user.name || user.email || "",
-        amount,
-        paidAt: serverTimestamp(),
-        adminBy: auth.currentUser ? auth.currentUser.uid : null,
-      });
-
-      // update user doc fields
-      const userDocRef = doc(db, "users", user.id);
-      await updateDoc(userDocRef, {
-        promoterPaymentStatus: "paid",
-        promoterLastPaidAt: serverTimestamp(),
-        promoterLastPaidAmount: amount,
-      });
-
-      alert("Payment recorded and user updated.");
-    } catch (err) {
-      alert("Error while making payment: " + err.message);
-    }
-  };
-
-  // Optionally set payment to pending / clear -- small helpers
-  const setPaymentPending = async (user) => {
-    if (!window.confirm("Mark payment status as PENDING for this user?")) return;
-    try {
-      await updateDoc(doc(db, "users", user.id), { promoterPaymentStatus: "pending" });
-      alert("Payment status set to pending.");
-    } catch (err) {
-      alert("Error: " + err.message);
-    }
-  };
-
-  // If you want to record account deletion date manually (if your system doesn't auto-record it),
-  // provide a helper to set deletedAt on user doc. (I left it as an optional button below.)
+  // Mark account deleted (optional admin action)
   const markAccountDeleted = async (user) => {
     if (!window.confirm("Mark this account as deleted (set deletedAt = now)?")) return;
     try {
@@ -371,68 +343,142 @@ export default function AdminDashboard() {
     }
   };
 
+  // Helper: compute students count & commission sum for a promoter using paymentsList & studentDatabaseList fallback
+  const computePromoterMetrics = (promoter) => {
+    if (!promoter) return { studentsCount: 0, totalCommission: 0 };
+    // students attached by referralId == promoter.uniqueId OR promoterUid matches
+    const attachedStudents = students.filter((s) => s.referralId === promoter.uniqueId || s.mappedPromoter === promoter.uniqueId || s.mappedPromoter === promoter.id);
+    const studentsCount = attachedStudents.length;
+
+    // Try to compute commission from paymentsList where promoterUid/promoterUniqueId matches
+    const paymentsForPromoter = paymentsList.filter((p) => {
+      return (
+        p.promoterUid === promoter.id ||
+        p.promoterUniqueId === promoter.uniqueId ||
+        p.promoterId === promoter.uniqueId ||
+        p.promoterId === promoter.id
+      );
+    });
+
+    let totalCommission = 0;
+    if (paymentsForPromoter.length > 0) {
+      paymentsForPromoter.forEach((p) => {
+        // commissionAmount field preferred; else compute from percent if available; else 0
+        const commissionAmount = Number(p.commissionAmount ?? 0) || (Number(p.amount || 0) * (Number(p.commissionPercent || 0) / 100));
+        totalCommission += isNaN(commissionAmount) ? 0 : commissionAmount;
+      });
+    } else {
+      // fallback: check studentDatabase records for commission-like fields on attached students
+      attachedStudents.forEach((s) => {
+        const v = Number(
+          s.commissionEarned ??
+            s.promoterCommission ??
+            s.promoterCommissionAmount ??
+            0
+        );
+        totalCommission += isNaN(v) ? 0 : v;
+      });
+    }
+
+    return { studentsCount, totalCommission };
+  };
+
+  // Update payment settlement status (payments collection)
+  const updatePaymentSettlement = async (paymentDocId, newStatus) => {
+    try {
+      await updateDoc(doc(db, "payments", paymentDocId), { settlementStatus: newStatus });
+      alert("Payment settlement status updated.");
+    } catch (err) {
+      console.error("updatePaymentSettlement error", err);
+      alert("Failed to update payment: " + (err.message || err));
+    }
+  };
+
+  // Update receipt URL for a payment (prompt admin for url)
+  const updatePaymentReceiptUrl = async (paymentDocId) => {
+    const url = window.prompt("Enter receipt URL (full web URL):");
+    if (!url) return;
+    try {
+      await updateDoc(doc(db, "payments", paymentDocId), { receiptUrl: url });
+      alert("Receipt URL saved.");
+    } catch (err) {
+      console.error("updatePaymentReceiptUrl error", err);
+      alert("Failed to save receipt URL: " + (err.message || err));
+    }
+  };
+
+  // Toggle promoterApproved on studentDatabase record
+  const togglePromoterApprovedOnStudentRecord = async (studentRecordId, currentValue) => {
+    try {
+      await updateDoc(doc(db, "studentDatabase", studentRecordId), { promoterApproved: !currentValue });
+      alert("promoterApproved toggled.");
+    } catch (err) {
+      console.error("togglePromoterApproved error", err);
+      alert("Failed to update student record: " + (err.message || err));
+    }
+  };
+
   // ---------- RENDER ----------
-return (
-  <div
-    className="admin-dashboard"
-    style={{
-      padding: 16,
-      fontFamily:
-        "'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial",
-    }}
-  >
+  return (
     <div
-      className="top-nav"
-      style={{ display: "flex", gap: 8, marginBottom: 12 }}
+      className="admin-dashboard"
+      style={{
+        padding: 16,
+        fontFamily:
+          "'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial",
+      }}
     >
-      <button
-        onClick={() => {
-          setViewType("packages");
-          navigate("/admin-dashboard");
-        }}
-        style={navBtnStyle}
+      <div
+        className="top-nav"
+        style={{ display: "flex", gap: 8, marginBottom: 12 }}
       >
-        Home
-      </button>
+        <button
+          onClick={() => {
+            setViewType("packages");
+            navigate("/admin-dashboard");
+          }}
+          style={navBtnStyle}
+        >
+          Home
+        </button>
 
-      <button
-        onClick={() => {
-          setViewType("promoters");
-          navigate("/approve-promoter");
-        }}
-        style={navBtnStyle}
-      >
-        Approve Promoter
-      </button>
+        <button
+          onClick={() => {
+            setViewType("promoters");
+            navigate("/approve-promoter");
+          }}
+          style={navBtnStyle}
+        >
+          Approve Promoter
+        </button>
 
-      <button
-        onClick={() => navigate("/promoter-database")}
-        style={navBtnStyle}
-      >
-        Promoter Database
-      </button>
+        <button
+          onClick={() => navigate("/promoter-database")}
+          style={navBtnStyle}
+        >
+          Promoter Database
+        </button>
 
-      <button
-        onClick={() => navigate("/student-database")}
-        style={navBtnStyle}
-      >
-        Student Database
-      </button>
+        <button
+          onClick={() => navigate("/student-database")}
+          style={navBtnStyle}
+        >
+          Student Database
+        </button>
 
-      <button
-        className="logout-btn"
-        onClick={handleLogout}
-        style={{
-          ...navBtnStyle,
-          marginLeft: "auto",
-          background: "#ef4444",
-          color: "#fff",
-        }}
-      >
-        Logout
-      </button>
-    </div>
-
+        <button
+          className="logout-btn"
+          onClick={handleLogout}
+          style={{
+            ...navBtnStyle,
+            marginLeft: "auto",
+            background: "#ef4444",
+            color: "#fff",
+          }}
+        >
+          Logout
+        </button>
+      </div>
 
       <div className="admin-header" style={{ marginBottom: 12 }}>
         <h1 style={{ margin: 0 }}>Admin Dashboard</h1>
@@ -658,15 +704,12 @@ return (
           <div className="list" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
             {viewType === "packages" && (filteredPackages.length === 0 ? <div className="empty" style={{ color: "#666" }}>No packages found.</div> : (
               filteredPackages.map((pkg) => {
-                // compute safe numbers
                 const priceNum = parseFloat(pkg.price || 0);
                 const rd = parseFloat(pkg.regularDiscount || 0);
                 const ad = parseFloat(pkg.additionalDiscount || 0);
                 const payableNum = parseFloat(pkg.totalPayable || pkg.totalPayable === 0 ? pkg.totalPayable : pkg.price) || 0;
                 const durationNum = parseFloat(pkg.duration || 0);
                 const ratePerHr = durationNum > 0 ? (payableNum / durationNum) : null;
-
-                // freebies normalization
                 const freebiesText = Array.isArray(pkg.freebies) ? pkg.freebies.join(", ") : (pkg.freebies || "");
 
                 return (
@@ -686,21 +729,18 @@ return (
                       Class {pkg.classGrade} {pkg.classGrade !== "Professional Course" ? `• ${pkg.syllabus}` : ""}
                     </div>
 
-                    {/* Subject */}
                     {pkg.subject && (
                       <div className="pkg-detail" style={{ marginTop: 8, fontSize: 14 }}>
                         <strong>Subject:</strong> <span style={{ marginLeft: 6 }}>{pkg.subject}</span>
                       </div>
                     )}
 
-                    {/* Course details */}
                     {pkg.courseDetails && (
                       <div className="pkg-detail" style={{ marginTop: 6, fontSize: 14, color: "#374151" }}>
                         <strong>Course:</strong> <span style={{ marginLeft: 6 }}>{pkg.courseDetails}</span>
                       </div>
                     )}
 
-                    {/* Duration & Rate */}
                     {pkg.duration && (
                       <div style={{ marginTop: 8, fontSize: 14 }}>
                         <strong>Duration:</strong> <span style={{ marginLeft: 6 }}>{pkg.duration} hrs</span>
@@ -711,14 +751,12 @@ return (
                       </div>
                     )}
 
-                    {/* Freebies */}
                     {freebiesText && freebiesText.trim() !== "" && (
                       <div style={{ marginTop: 8, fontSize: 13, color: "#065f46", background: "#ecfdf5", padding: "6px 8px", borderRadius: 8 }}>
                         <strong>Freebies:</strong> <span style={{ marginLeft: 6 }}>{freebiesText}</span>
                       </div>
                     )}
 
-                    {/* Pricing & Discounts */}
                     <div style={{ marginTop: 10, display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
                       <div style={{ fontSize: 14 }}>
                         <div>
@@ -752,7 +790,6 @@ return (
                       </div>
                     </div>
 
-                    {/* Edit / Delete */}
                     <div className="pkg-actions" style={{ marginTop: 12, display: "flex", gap: 8 }}>
                       <button onClick={() => startEdit(pkg)} style={{ flex: 1, background: "#0ea5e9", color: "#fff", border: "none", padding: "8px 10px", borderRadius: 8, cursor: "pointer" }}>Edit</button>
                       <button onClick={() => handleDelete(pkg.id)} style={{ flex: 1, background: "#ef4444", color: "#fff", border: "none", padding: "8px 10px", borderRadius: 8, cursor: "pointer" }}>Delete</button>
@@ -774,52 +811,57 @@ return (
                     if (!userFilterText) return true;
                     const t = userFilterText.toLowerCase();
                     return (u.name || "").toLowerCase().includes(t) || (u.email || "").toLowerCase().includes(t) || (u.phone || "").toLowerCase().includes(t);
-                  }).map((u) => (
-                    <div key={u.id} className="pkg" style={{
-                      borderRadius: 10,
-                      border: "1px solid #e6e6e6",
-                      padding: 12,
-                      background: "#fff",
-                      boxShadow: "0 4px 10px rgba(16,24,40,0.04)"
-                    }}>
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                        <div>
-                          <div style={{ fontWeight: 700, fontSize: 16 }}>{u.name || u.email}</div>
-                          <div style={{ fontSize: 13, color: "#6b7280" }}>{u.email} • {u.phone}</div>
+                  }).map((u) => {
+                    const { studentsCount, totalCommission } = computePromoterMetrics(u);
+                    return (
+                      <div key={u.id} className="pkg" style={{
+                        borderRadius: 10,
+                        border: "1px solid #e6e6e6",
+                        padding: 12,
+                        background: "#fff",
+                        boxShadow: "0 4px 10px rgba(16,24,40,0.04)"
+                      }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                          <div>
+                            <div style={{ fontWeight: 700, fontSize: 16 }}>{u.name || u.email}</div>
+                            <div style={{ fontSize: 13, color: "#6b7280" }}>{u.email} • {u.phone}</div>
+                          </div>
+
+                          <div style={{ textAlign: "right" }}>
+                            <div style={{ fontSize: 12, color: "#6b7280" }}>Enrollment</div>
+                            <div style={{ fontWeight: 700 }}>{formatDate(u.createdAt)}</div>
+                          </div>
                         </div>
 
-                        <div style={{ textAlign: "right" }}>
-                          <div style={{ fontSize: 12, color: "#6b7280" }}>Enrollment</div>
-                          <div style={{ fontWeight: 700 }}>{formatDate(u.createdAt)}</div>
+                        <div style={{ marginTop: 8, display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+                          <div style={{ padding: 8, background: "#f1f5f9", borderRadius: 8 }}>
+                            <div style={{ fontSize: 12, color: "#6b7280" }}>Students Attached</div>
+                            <div style={{ fontWeight: 800, fontSize: 18 }}>{studentsCount}</div>
+                          </div>
+
+                          <div style={{ padding: 8, background: "#f8fafc", borderRadius: 8 }}>
+                            <div style={{ fontSize: 12, color: "#6b7280" }}>Total Commission Earned</div>
+                            <div style={{ fontWeight: 800, fontSize: 18 }}>₹{Number(totalCommission || 0).toFixed(2)}</div>
+                          </div>
+
+                          <div style={{ marginLeft: "auto", textAlign: "right", minWidth: 160 }}>
+                            <div style={{ fontSize: 12, color: "#6b7280" }}>Approved</div>
+                            <div style={{ fontWeight: 700 }}>{u.promoterApproved ? "Yes" : "No"}</div>
+                          </div>
+                        </div>
+
+                        <div style={{ marginTop: 10, display: "flex", gap: 8 }}>
+                          <button onClick={() => markAccountDeleted(u)} style={{ flex: 1, background: "#ef4444", color: "#fff", border: "none", padding: "8px 10px", borderRadius: 8, cursor: "pointer" }}>Mark Deleted</button>
+                        </div>
+
+                        <div style={{ marginTop: 8, fontSize: 12, color: "#6b7280" }}>
+                          <div><strong>Enrollment:</strong> {formatDate(u.createdAt)}</div>
+                          <div><strong>Deleted At:</strong> {formatDate(u.deletedAt)}</div>
+                          <div><strong>UID:</strong> {u.uid || u.id}</div>
                         </div>
                       </div>
-
-                      <div style={{ marginTop: 8, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-                        <div style={{ fontSize: 13 }}>
-                          <div><strong>Approved:</strong> {u.promoterApproved ? "Yes" : "No"}</div>
-                          <div style={{ marginTop: 6 }}><strong>Business Area:</strong> {u.businessArea || "—"}</div>
-                        </div>
-
-                        <div style={{ marginLeft: "auto", textAlign: "right", minWidth: 160 }}>
-                          <div style={{ fontSize: 12, color: "#6b7280" }}>Payment Status</div>
-                          <div style={{ fontWeight: 800, fontSize: 14 }}>{(paymentStatusForUser(u) || "Not set").toUpperCase()}</div>
-                          {u.promoterLastPaidAmount && <div style={{ fontSize: 13 }}>₹{u.promoterLastPaidAmount} • {formatDate(u.promoterLastPaidAt)}</div>}
-                        </div>
-                      </div>
-
-                      <div style={{ marginTop: 10, display: "flex", gap: 8 }}>
-                        <button onClick={() => payCommission(u)} style={{ flex: 1, background: "#10b981", color: "#fff", border: "none", padding: "8px 10px", borderRadius: 8, cursor: "pointer" }}>Pay Commission</button>
-                        <button onClick={() => setPaymentPending(u)} style={{ flex: 1, background: "#f59e0b", color: "#fff", border: "none", padding: "8px 10px", borderRadius: 8, cursor: "pointer" }}>Mark Pending</button>
-                        <button onClick={() => markAccountDeleted(u)} style={{ flex: 1, background: "#ef4444", color: "#fff", border: "none", padding: "8px 10px", borderRadius: 8, cursor: "pointer" }}>Mark Deleted</button>
-                      </div>
-
-                      <div style={{ marginTop: 8, fontSize: 12, color: "#6b7280" }}>
-                        <div><strong>Enrollment:</strong> {formatDate(u.createdAt)}</div>
-                        <div><strong>Deleted At:</strong> {formatDate(u.deletedAt)}</div>
-                        <div><strong>UID:</strong> {u.uid || u.id}</div>
-                      </div>
-                    </div>
-                  ))
+                    );
+                  })
                 )}
               </>
             )}
@@ -836,32 +878,105 @@ return (
                     if (!userFilterText) return true;
                     const t = userFilterText.toLowerCase();
                     return (u.name || "").toLowerCase().includes(t) || (u.email || "").toLowerCase().includes(t) || (u.phone || "").toLowerCase().includes(t);
-                  }).map((u) => (
-                    <div key={u.id} className="pkg" style={{
-                      borderRadius: 10,
-                      border: "1px solid #e6e6e6",
-                      padding: 12,
-                      background: "#fff",
-                      boxShadow: "0 4px 10px rgba(16,24,40,0.04)"
-                    }}>
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                        <div>
-                          <div style={{ fontWeight: 700, fontSize: 16 }}>{u.name || u.email}</div>
-                          <div style={{ fontSize: 13, color: "#6b7280" }}>{u.email} • {u.phone}</div>
-                        </div>
-                        <div style={{ textAlign: "right" }}>
-                          <div style={{ fontSize: 12, color: "#6b7280" }}>Enrollment</div>
-                          <div style={{ fontWeight: 700 }}>{formatDate(u.createdAt)}</div>
-                        </div>
-                      </div>
+                  }).map((u) => {
+                    // payments for this student (from paymentsList)
+                    const paymentsForStudent = paymentsList.filter((p) => p.studentId === u.id || p.studentId === u.uid || p.studentId === (u.id));
+                    // studentDatabase records for this student
+                    const studentRecords = studentDatabaseList.filter((r) => r.studentId === u.id || r.studentId === u.uid);
 
-                      <div style={{ marginTop: 8, fontSize: 12, color: "#6b7280" }}>
-                        <div><strong>Syllabus / Class:</strong> {u.syllabus || "—"} {u.classGrade ? `• ${u.classGrade}` : ""}</div>
-                        <div><strong>Deleted At:</strong> {formatDate(u.deletedAt)}</div>
-                        <div><strong>UID:</strong> {u.uid || u.id}</div>
+                    return (
+                      <div key={u.id} className="pkg" style={{
+                        borderRadius: 10,
+                        border: "1px solid #e6e6e6",
+                        padding: 12,
+                        background: "#fff",
+                        boxShadow: "0 4px 10px rgba(16,24,40,0.04)"
+                      }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                          <div>
+                            <div style={{ fontWeight: 700, fontSize: 16 }}>{u.name || u.email}</div>
+                            <div style={{ fontSize: 13, color: "#6b7280" }}>{u.email} • {u.phone}</div>
+                          </div>
+                          <div style={{ textAlign: "right" }}>
+                            <div style={{ fontSize: 12, color: "#6b7280" }}>Enrollment</div>
+                            <div style={{ fontWeight: 700 }}>{formatDate(u.createdAt)}</div>
+                          </div>
+                        </div>
+
+                        <div style={{ marginTop: 8, fontSize: 12, color: "#6b7280" }}>
+                          <div><strong>Syllabus / Class:</strong> {u.syllabus || "—"} {u.classGrade ? `• ${u.classGrade}` : ""}</div>
+                          <div><strong>Deleted At:</strong> {formatDate(u.deletedAt)}</div>
+                          <div><strong>UID:</strong> {u.uid || u.id}</div>
+                        </div>
+
+                        {/* Payments list (from payments collection) */}
+                        <div style={{ marginTop: 12 }}>
+                          <h4 style={{ margin: "6px 0" }}>Payments</h4>
+                          {paymentsForStudent.length === 0 ? (
+                            <div style={{ color: "#666" }}>No payments found (payments collection)</div>
+                          ) : (
+                            paymentsForStudent.map((p) => (
+                              <div key={p.id} style={{ padding: 8, borderRadius: 8, background: "#f8fafc", marginTop: 8 }}>
+                                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                                  <div>
+                                    <div style={{ fontWeight: 700 }}>{p.packageName || "Package"}</div>
+                                    <div style={{ fontSize: 13, color: "#374151" }}>₹{Number(p.amount || 0).toFixed(2)} • {p.paymentId || "-"}</div>
+                                    <div style={{ fontSize: 12, color: "#6b7280" }}>{formatDate(p.createdAt || p.paymentDate)}</div>
+                                  </div>
+
+                                  <div style={{ textAlign: "right" }}>
+                                    <div style={{ fontSize: 13, fontWeight: 700, color: p.status === "paid" ? "#16a34a" : "#b45309" }}>
+                                      {p.status || p.settlementStatus || "—"}
+                                    </div>
+
+                                    <div style={{ marginTop: 8, display: "flex", gap: 8 }}>
+                                      {p.settlementStatus !== "settled" ? (
+                                        <button onClick={() => updatePaymentSettlement(p.id, "settled")} style={{ padding: "6px 8px", borderRadius: 6, background: "#059669", color: "#fff", border: "none", cursor: "pointer" }}>Mark Settled</button>
+                                      ) : (
+                                        <button onClick={() => updatePaymentSettlement(p.id, "pending")} style={{ padding: "6px 8px", borderRadius: 6, background: "#f59e0b", color: "#fff", border: "none", cursor: "pointer" }}>Mark Pending</button>
+                                      )}
+
+                                      <button onClick={() => updatePaymentReceiptUrl(p.id)} style={{ padding: "6px 8px", borderRadius: 6, background: "#0ea5e9", color: "#fff", border: "none", cursor: "pointer" }}>
+                                        {p.receiptUrl ? "Edit Receipt" : "Add Receipt"}
+                                      </button>
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+                            ))
+                          )}
+                        </div>
+
+                        {/* studentDatabase records (student-facing) */}
+                        <div style={{ marginTop: 12 }}>
+                          <h4 style={{ margin: "6px 0" }}>Student Records</h4>
+                          {studentRecords.length === 0 ? (
+                            <div style={{ color: "#666" }}>No studentDatabase records</div>
+                          ) : (
+                            studentRecords.map((rec) => (
+                              <div key={rec.id} style={{ padding: 8, borderRadius: 8, background: "#fff7ed", marginTop: 8 }}>
+                                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                                  <div>
+                                    <div style={{ fontWeight: 700 }}>{rec.packageName}</div>
+                                    <div style={{ fontSize: 13, color: "#374151" }}>₹{Number(rec.amount || 0).toFixed(2)} • {rec.paymentId || "-"}</div>
+                                    <div style={{ fontSize: 12, color: "#6b7280" }}>{formatDate(rec.paymentDate || rec.createdAt)}</div>
+                                  </div>
+                                  <div style={{ textAlign: "right" }}>
+                                    <div style={{ marginBottom: 8 }}>{rec.paymentStatus || "—"}</div>
+                                    <div style={{ display: "flex", gap: 8 }}>
+                                      <button onClick={() => togglePromoterApprovedOnStudentRecord(rec.id, !!rec.promoterApproved)} style={{ padding: "6px 8px", borderRadius: 6, background: rec.promoterApproved ? "#059669" : "#6b7280", color: "#fff", border: "none", cursor: "pointer" }}>
+                                        {rec.promoterApproved ? "Promoter Approved" : "Approve Promoter"}
+                                      </button>
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+                            ))
+                          )}
+                        </div>
                       </div>
-                    </div>
-                  ))
+                    );
+                  })
                 )}
               </>
             )}

@@ -1,0 +1,21 @@
+{
+  "name": "functions",
+  "description": "Cloud Functions for ISP Education — payouts & admin utilities",
+  "version": "1.0.0",
+  "private": true,
+  "engines": {
+    "node": "20"
+  },
+  "scripts": {
+    "lint": "eslint --ext .js . || true",
+    "deploy": "firebase deploy --only functions"
+  },
+  "dependencies": {
+    "firebase-admin": "^11.11.0",
+    "firebase-functions": "^4.4.0",
+    "node-fetch": "^2.6.12"
+  },
+  "devDependencies": {
+    "eslint": "^8.48.0"
+  }
+}

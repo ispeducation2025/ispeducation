@@ -253,72 +253,125 @@ const SignInPage = () => {
   };
 
   // --------- Google Sign In ---------
+  // REPLACED function — improved checks, merge-safe writes, clearer errors
   const handleGoogleSignIn = async () => {
     setError("");
 
+    // If user is signing up, role must be selected
     if (isSignUp && !role) {
       setError("Please select role before Google Sign-In");
       return;
     }
 
+    // If sign-up as student, ensure class & syllabus selected BEFORE popup
+    if (isSignUp && role === "student") {
+      if (!classGrade || !syllabus) {
+        setError("Please select Class & Syllabus before Google Sign-In");
+        return;
+      }
+    }
+
+    // If sign-up as promoter (or alsoPromoter), ensure phone & business area
+    if (isSignUp && (role === "promoter" || alsoPromoter)) {
+      if (!phone || phone.trim().length < 8) {
+        setError("Please enter a valid phone number before Google Sign-In");
+        return;
+      }
+      if (!businessArea || businessArea.trim() === "") {
+        setError("Please enter Business Area before Google Sign-In");
+        return;
+      }
+    }
+
     try {
+      // open popup
       const result = await signInWithPopup(auth, googleProvider);
       const user = result.user;
+      console.log("Google sign-in success uid=", user.uid);
 
-      if (!name) setName(user.displayName || "");
-      if (!email) setEmail(user.email || "");
+      // prefer form state but fallback to provider values
+      const finalName = (name && name.trim()) || user.displayName || "";
+      const finalEmail = (email && email.trim()) || user.email || "";
+      const finalPhone = (phone && phone.trim()) || user.phoneNumber || "";
+      const finalRole = role || "student";
 
       const userRef = doc(db, "users", user.uid);
       const userDoc = await getDoc(userRef);
 
-      // First-time Google Sign Up
+      // If first time and signing up via the sign-up flow
       if (!userDoc.exists() && isSignUp) {
-        const uniqueId = await generateUniqueId(name || user.displayName || "");
-
-        if (role === "student" && (!classGrade || !syllabus)) {
-          setError("Please select Class & Syllabus before Google Sign-In");
-          return;
-        }
+        const uniqueId = await generateUniqueId(finalName || user.displayName || "");
 
         const userData = {
           uid: user.uid,
           uniqueId,
-          name: name || user.displayName || "",
-          email: user.email || "",
-          phone: phone || "",
-          role,
-          referralId: role === "student" ? referralId || null : null,
-          classGrade: role === "student" ? classGrade : null,
-          syllabus: role === "student" ? syllabus : null,
+          name: finalName || user.displayName || "",
+          email: finalEmail || user.email || "",
+          phone: finalPhone || user.phoneNumber || "",
+          role: finalRole,
+          referralId: finalRole === "student" ? referralId || null : null,
+          classGrade: finalRole === "student" ? classGrade || null : null,
+          syllabus: finalRole === "student" ? syllabus || null : null,
           alsoPromoter,
           promoterApproved: false,
+          businessArea: finalRole === "promoter" || alsoPromoter ? businessArea || null : null,
+          promoterSince: finalRole === "promoter" ? serverTimestamp() : undefined,
           createdAt: serverTimestamp(),
         };
 
-        if (role === "promoter" || alsoPromoter) {
-          userData.promoterSince = serverTimestamp();
+        // Use merge true so we don't accidentally wipe other fields
+        await setDoc(userRef, userData, { merge: true });
+        alert(`Signup successful! Your Unique ID is ${userData.uniqueId}`);
+      } else if (userDoc.exists() && isSignUp) {
+        // doc exists but user is trying to sign up via Google — merge missing fields safely
+        const existing = userDoc.data();
+        const updates = {};
+
+        if (!existing.uniqueId) updates.uniqueId = await generateUniqueId(finalName || user.displayName || "");
+        if (!existing.name && finalName) updates.name = finalName;
+        if (!existing.email && finalEmail) updates.email = finalEmail;
+        if (!existing.phone && finalPhone) updates.phone = finalPhone;
+
+        if (finalRole === "student") {
+          if (!existing.classGrade) updates.classGrade = classGrade || existing.classGrade || null;
+          if (!existing.syllabus) updates.syllabus = syllabus || existing.syllabus || null;
         }
 
-        await setDoc(userRef, userData);
-        alert(`Signup successful! Your Unique ID is ${uniqueId}`);
+        if (finalRole === "promoter" || alsoPromoter) {
+          updates.alsoPromoter = true;
+          updates.businessArea = businessArea || existing.businessArea || null;
+          if (!existing.promoterSince) updates.promoterSince = serverTimestamp();
+          if (existing.promoterApproved === undefined) updates.promoterApproved = false;
+        }
+
+        if (Object.keys(updates).length) {
+          await setDoc(userRef, updates, { merge: true });
+        }
       }
 
-      // Ensure user profile exists
+      // If user didn't sign up flow and no user doc exists, create a minimal profile
       const finalSnap = await getDoc(userRef);
       if (!finalSnap.exists()) {
-        await setDoc(userRef, {
-          uid: user.uid,
-          name: user.displayName || "",
-          email: user.email || "",
-          role: "student",
-          alsoPromoter: false,
-          promoterApproved: false,
-          createdAt: serverTimestamp(),
-        });
+        const uniqueId = await generateUniqueId(finalName || user.displayName || "");
+        await setDoc(
+          userRef,
+          {
+            uid: user.uid,
+            uniqueId,
+            name: finalName || user.displayName || "",
+            email: finalEmail || user.email || "",
+            phone: finalPhone || user.phoneNumber || "",
+            role: "student",
+            alsoPromoter: false,
+            promoterApproved: false,
+            createdAt: serverTimestamp(),
+          },
+          { merge: true }
+        );
       }
 
       const finalData = (await getDoc(userRef)).data();
-      console.log("Fetched finalData:", finalData);
+      console.log("Final user doc after Google sign-in:", finalData);
 
       // Admin check
       if (user.uid === ADMIN_UID) {
@@ -326,8 +379,8 @@ const SignInPage = () => {
         return;
       }
 
-      // Case 1: User is student but also promoter
-      if (finalData.alsoPromoter === true) {
+      // Student who is also promoter
+      if (finalData?.alsoPromoter === true) {
         if (finalData.promoterApproved) {
           setLoginUserData(finalData);
           setShowRoleModal(true);
@@ -339,8 +392,8 @@ const SignInPage = () => {
         }
       }
 
-      // Case 2: Pure promoter
-      if (finalData.role === "promoter") {
+      // Pure promoter
+      if (finalData?.role === "promoter") {
         if (!finalData.promoterApproved) {
           alert("Promoter access pending admin approval.");
           navigate("/student-dashboard");
@@ -351,11 +404,17 @@ const SignInPage = () => {
         }
       }
 
-      // Case 3: Regular student
+      // Default -> student
       navigate("/student-dashboard");
     } catch (err) {
-      console.error(err);
-      setError(err.message || "Google sign-in failed.");
+      console.error("Google sign-in error:", err);
+      if (err?.code === "auth/popup-closed-by-user") {
+        setError("Popup closed before completing sign-in. Try again.");
+      } else if (err?.code === "auth/cancelled-popup-request") {
+        setError("Multiple sign-in popups detected. Close the extra one and try again.");
+      } else {
+        setError(err.message || "Google sign-in failed.");
+      }
     }
   };
 
@@ -788,33 +847,32 @@ const SignInPage = () => {
 
         /* Replace your existing .image-box and .image-box img rules with the following */
 
-/* container for each image */
-.image-box {
-  flex: 0 0 48%;
-  height: 320px;            /* desktop default */
-  border-radius: 15px;
-  overflow: hidden;
-  background: rgba(255,255,255,0.12);
-  box-shadow: 0 6px 18px rgba(0,0,0,0.12);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 8px;             /* give a little breathing room */
-  box-sizing: border-box;
-}
+  /* container for each image */
+  .image-box {
+    flex: 0 0 48%;
+    height: 320px;            /* desktop default */
+    border-radius: 15px;
+    overflow: hidden;
+    background: rgba(255,255,255,0.12);
+    box-shadow: 0 6px 18px rgba(0,0,0,0.12);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 8px;             /* give a little breathing room */
+    box-sizing: border-box;
+  }
 
-/* make image fully visible without cropping */
-.image-box img {
-  max-width: 100%;
-  max-height: 100%;
-  width: auto;
-  height: auto;
-  object-fit: contain;      /* <-- important: prevents cropping */
-  display: block;
-  margin: 0 auto;
-  border-radius: 10px;
-}
-
+  /* make image fully visible without cropping */
+  .image-box img {
+    max-width: 100%;
+    max-height: 100%;
+    width: auto;
+    height: auto;
+    object-fit: contain;      /* <-- important: prevents cropping */
+    display: block;
+    margin: 0 auto;
+    border-radius: 10px;
+  }
 
       `}</style>
     </div>

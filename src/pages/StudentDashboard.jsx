@@ -90,7 +90,8 @@ const StudentDashboard = () => {
               name: data.name || "Student",
               classGrade: data.classGrade || data.class || data.grade || "",
               syllabus: data.syllabus || data.board || "",
-              mappedPromoter: data.mappedPromoter || "",
+              // support multiple common fields used for promoter-ref mapping
+              mappedPromoter: data.mappedPromoter || data.promoterId || data.referralId || "",
             });
           } else {
             // Fallback if no user doc
@@ -241,7 +242,31 @@ const StudentDashboard = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab]);
 
-  // Razorpay Checkout
+  // --- New helper: resolve promoter info robustly (uid or uniqueId) ---
+  const resolvePromoterInfo = async (mappedPromoter) => {
+    if (!mappedPromoter) return { promoterUid: null, promoterUniqueId: null, promoterName: null };
+    try {
+      // First try assuming mappedPromoter is a user doc id (uid)
+      const promoterDoc = await getDoc(doc(db, "users", mappedPromoter));
+      if (promoterDoc.exists()) {
+        const d = promoterDoc.data();
+        return { promoterUid: promoterDoc.id, promoterUniqueId: d.uniqueId || null, promoterName: d.name || d.email || null };
+      }
+      // Otherwise try querying where uniqueId == mappedPromoter
+      const q = query(collection(db, "users"), where("uniqueId", "==", mappedPromoter));
+      const snap = await getDocs(q);
+      if (!snap.empty) {
+        const doc0 = snap.docs[0];
+        const d = doc0.data();
+        return { promoterUid: doc0.id, promoterUniqueId: d.uniqueId || null, promoterName: d.name || d.email || null };
+      }
+    } catch (err) {
+      console.error("resolvePromoterInfo error", err);
+    }
+    return { promoterUid: null, promoterUniqueId: null, promoterName: null };
+  };
+
+  // Razorpay Checkout (creates richer payment docs)
   const handleCheckout = async () => {
     if (cart.length === 0) {
       alert("Cart is empty!");
@@ -261,17 +286,33 @@ const StudentDashboard = () => {
           alert("Payment successful! Payment ID: " + response.razorpay_payment_id);
           const paymentsRef = collection(db, "payments");
 
+          // resolve promoter info up-front (if any)
+          const mappedPromoter = studentInfo.mappedPromoter || null;
+          const promoterResolved = await resolvePromoterInfo(mappedPromoter);
+
           // For each package in cart: save to payments AND studentDatabase
           for (const pkg of cart) {
+            const commissionPercent = Number(pkg.commission || pkg.promoterCommission || 0);
+            const amount = Number(pkg.totalPayable || pkg.price || 0);
+
             const paymentDoc = {
               studentId: auth.currentUser.uid,
+              studentName: studentInfo.name || "",
               packageId: pkg.id,
-              packageName: pkg.packageName || pkg.concept,
+              packageName: pkg.packageName || pkg.concept || "",
               subject: pkg.subject || "",
-              amount: Number(pkg.totalPayable || pkg.price || 0),
+              amount,
               paymentId: response.razorpay_payment_id,
-              promoterId: studentInfo.mappedPromoter || null,
-              settlementStatus: "pending", // Admin will update to 'settled' later
+              promoterUid: promoterResolved.promoterUid || null,
+              promoterUniqueId: promoterResolved.promoterUniqueId || null,
+              promoterName: promoterResolved.promoterName || null,
+              promoterId: studentInfo.mappedPromoter || null, // legacy field name preserved
+              paymentMethod: "razorpay",
+              status: "paid",
+              settlementStatus: "pending",
+              commissionPercent,
+              commissionPaid: false,
+              receiptUrl: null,
               createdAt: new Date().toISOString(),
             };
 
@@ -286,9 +327,12 @@ const StudentDashboard = () => {
               packageId: pkg.id,
               packageName: pkg.packageName || pkg.concept,
               subject: pkg.subject || "",
-              amount: Number(pkg.totalPayable || pkg.price || 0),
+              amount,
               paymentId: response.razorpay_payment_id,
-              promoterId: studentInfo.mappedPromoter || null,
+              promoterUid: promoterResolved.promoterUid || null,
+              promoterUniqueId: promoterResolved.promoterUniqueId || null,
+              promoterName: promoterResolved.promoterName || null,
+              promoterId: studentInfo.mappedPromoter || null, // legacy
               promoterApproved: false, // admin can set this later
               alsoPromoter: false,
               paymentStatus: "Paid",
@@ -357,7 +401,7 @@ const StudentDashboard = () => {
               onClick={() => setActiveTab("shop")}
               style={{
                 background: activeTab === "shop" ? "#0ea5e9" : "transparent",
-                color: activeTab === "shop" ? "#fff" : "#fff",
+                color: "#fff",
                 border: "none",
                 padding: "8px 12px",
                 borderRadius: "8px",
@@ -669,7 +713,7 @@ const StudentDashboard = () => {
                             padding: "15px",
                             color: "#333",
                             fontSize: "14px",
-                            boxShadow: "0 6px 20px rgba(0,0,0,0.3)",
+                            boxShadow: "0 6px 20px rgba(0,0,0,0.12)",
                             background: "#fff",
                             transition: "transform 0.2s, box-shadow 0.2s",
                             display: "flex",
@@ -681,6 +725,7 @@ const StudentDashboard = () => {
                         >
                           {/* PRICE STICKER — bottom-left (fixed) */}
                           <div
+                            className="price-sticker"
                             style={{
                               position: "absolute",
                               bottom: 16,
@@ -693,12 +738,13 @@ const StudentDashboard = () => {
                               fontSize: "12px",
                               fontWeight: 700,
                               zIndex: 6,
-                              boxShadow: "0 8px 24px rgba(0,255,150,0.06), 0 4px 10px rgba(0,0,0,0.5)",
+                              boxShadow: "0 8px 24px rgba(0,255,150,0.06), 0 4px 10px rgba(0,0,0,0.2)",
                               border: "1px solid rgba(0,255,150,0.12)",
                               display: "flex",
                               flexDirection: "column",
                               alignItems: "flex-start",
                               lineHeight: 1.05,
+                              minWidth: 120,
                             }}
                             aria-hidden
                           >
@@ -723,8 +769,8 @@ const StudentDashboard = () => {
                                 borderRadius: "6px",
                                 fontSize: "12px",
                                 fontWeight: "700",
-                                boxShadow: "0 2px 6px rgba(0,0,0,0.15)",
-                                zIndex: 3,
+                                boxShadow: "0 2px 6px rgba(0,0,0,0.12)",
+                                zIndex: 7,
                               }}
                             >
                               {totalDiscount}% OFF
@@ -785,8 +831,9 @@ const StudentDashboard = () => {
                                 </p>
                               )}
                               {pkg.perHour && (
-                                <p style={{ margin: "4px 0" }}>
-                                  <b>Rate (stored):</b> ₹{pkg.perHour}/hr
+                                <p style={{ margin: "4px 0", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                                  <span><b>Rate (stored):</b></span>
+                                  <span style={{ background: "#f3f4f6", padding: "4px 8px", borderRadius: 6 }}>₹{pkg.perHour}/hr</span>
                                 </p>
                               )}
 
@@ -828,7 +875,7 @@ const StudentDashboard = () => {
                           </div>
 
                           {/* ADD TO CART — bottom-right (fixed) */}
-                          <div style={{ position: "absolute", bottom: 16, right: 16, zIndex: 6 }}>
+                          <div style={{ position: "absolute", bottom: 16, right: 16, zIndex: 20 }}>
                             <button
                               onClick={() => addToCart(pkg)}
                               style={{
@@ -839,7 +886,8 @@ const StudentDashboard = () => {
                                 borderRadius: "6px",
                                 cursor: "pointer",
                                 fontWeight: "600",
-                                boxShadow: "0 6px 14px rgba(30,144,255,0.18)"
+                                boxShadow: "0 6px 14px rgba(30,144,255,0.18)",
+                                zIndex: 20,
                               }}
                             >
                               Add to Cart
@@ -988,7 +1036,7 @@ const StudentDashboard = () => {
           @media (max-width: 900px) {
             .student-dashboard {
               flex-direction: column;
-              padding-bottom: 220px; /* ensure space for bottom action bar and sticky buttons */
+              padding-bottom: 260px; /* ensure space for bottom action bar and sticky buttons */
             }
 
             .student-dashboard > div:nth-child(2) {
@@ -1022,7 +1070,26 @@ const StudentDashboard = () => {
 
             /* Adjust sticker and add-to-cart positions on small screens so they don't cover content */
             .zoom-card {
-              padding-bottom: 80px; /* provide extra space inside card for fixed elements */
+              padding-bottom: 100px; /* provide extra space inside card for fixed elements */
+            }
+
+            /* price sticker tweaks for small screens: move up and scale down so it doesn't block content */
+            .price-sticker {
+              position: absolute !important;
+              top: 10px !important;
+              left: 10px !important;
+              bottom: auto !important;
+              transform: none !important;
+              padding: 6px 8px !important;
+              font-size: 11px !important;
+              min-width: 96px !important;
+              z-index: 6 !important;
+              opacity: 0.98;
+            }
+
+            /* ensure Add to Cart button is always visible above sticker */
+            .zoom-card button {
+              z-index: 999 !important;
             }
           }
 
@@ -1044,11 +1111,21 @@ const StudentDashboard = () => {
               height: 60px !important;
             }
 
+            .price-sticker {
+              left: 8px !important;
+              top: 8px !important;
+              padding: 5px 6px !important;
+              font-size: 10px !important;
+              min-width: 84px !important;
+            }
+
+            .zoom-card {
+              padding-bottom: 120px;
+            }
+
             /* make sticker and button slightly smaller on very small screens */
             .zoom-card div[aria-hidden] {
               transform: scale(0.92);
-              left: 8px !important;
-              top: 10px !important;
             }
           }
         `}
