@@ -1,28 +1,14 @@
-// src/pages/PromoterDashboard.jsx
-/**
- * PromoterDashboard.jsx
- *
- * - Works with Firestore collections: users, packages, payments.
- * - Uses Firebase Auth phone verification + linkWithCredential to LINK phone to existing promoter account.
- * - Calls Cloud Function (REACT_APP_FUNCTIONS_URL) to send email notifications.
- * - Responsive, collapsible sidebar (desktop & mobile).
- *
- * Notes:
- * - Ensure you set REACT_APP_FUNCTIONS_URL in your .env (no trailing slash).
- * - Ensure firebase authentication phone number and reCAPTCHA are configured for your domain.
- */
-
-import React, { useEffect, useState, useRef, useCallback } from "react";
+/* eslint-disable */
+import React, { useEffect, useState, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 
 import {
   collection,
   getDocs,
-  query,
-  where,
   doc,
   getDoc,
-  updateDoc,
+  query,
+  where,
 } from "firebase/firestore";
 
 import {
@@ -34,6 +20,7 @@ import {
 } from "firebase/auth";
 
 import { auth, db } from "../firebase/firebaseConfig";
+import { getFunctions, httpsCallable } from "firebase/functions";
 
 import {
   FaTachometerAlt,
@@ -154,6 +141,40 @@ async function sendEmail(payload) {
 }
 
 /* -------------------------
+   Money / commission helpers
+   ------------------------- */
+
+function parseMoneyFromPayment(p = {}) {
+  if (!p) return 0;
+  const candidates = [
+    { v: p.amount, meta: "amount" },
+    { v: p.packageCost, meta: "packageCost" },
+    { v: p.totalPayable, meta: "totalPayable" },
+    { v: p.price, meta: "price" },
+    { v: (p.rawRazorpay && p.rawRazorpay.amount), meta: "rawRazorpay.amount" },
+    { v: (p.raw && p.raw.amount), meta: "raw.amount" },
+    { v: (p.rawRazorpay && p.rawRazorpay.amount_paid), meta: "rawRazorpay.amount_paid" },
+    { v: (p.raw && p.raw.data && p.raw.data.amount), meta: "raw.data.amount" },
+  ];
+
+  for (const c of candidates) {
+    if (c.v === undefined || c.v === null || c.v === "") continue;
+    const num = Number(c.v);
+    if (!isFinite(num)) continue;
+    if ((c.meta.includes("raw") || c.meta.includes("razor") || c.meta.includes("data")) && Math.abs(num) >= 100) {
+      return num / 100;
+    }
+    return num;
+  }
+  return 0;
+}
+
+function safeParseFloat(v) {
+  const n = parseFloat(v);
+  return isFinite(n) ? n : 0;
+}
+
+/* -------------------------
    Main component
    ------------------------- */
 export default function PromoterDashboard() {
@@ -168,9 +189,9 @@ export default function PromoterDashboard() {
   const [loading, setLoading] = useState(true);
 
   // UI state
-  const [activeTab, setActiveTab] = useState("dashboard"); // dashboard / packages / students / commission / bank / profile
+  const [activeTab, setActiveTab] = useState("dashboard");
   const [selectedGrade, setSelectedGrade] = useState("");
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false); // supports desktop collapse + mobile
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [windowWidth, setWindowWidth] = useState(typeof window !== "undefined" ? window.innerWidth : 1200);
 
   // bank/upI + otp state
@@ -194,7 +215,6 @@ export default function PromoterDashboard() {
   useEffect(() => {
     function onResize() {
       setWindowWidth(window.innerWidth);
-      // if small screen, auto-collapse
       if (window.innerWidth < 920) setSidebarCollapsed(true);
       else setSidebarCollapsed(false);
     }
@@ -213,7 +233,6 @@ export default function PromoterDashboard() {
         if (mounted) {
           setPackages(pkgs);
         }
-        console.debug("PromoterDashboard: fetched packages:", pkgs.length);
       } catch (err) {
         console.error("PromoterDashboard: failed to fetch packages:", err);
       }
@@ -223,6 +242,78 @@ export default function PromoterDashboard() {
       mounted = false;
     };
   }, []);
+
+  // helper: robust client-side discovery (used when callable fails)
+  async function discoverStudentsClientSide({ canonicalUniqueId, promoterDocId, uid }) {
+    const found = [];
+    const safeAdd = (d) => {
+      if (!d || !d.id) return;
+      if (!found.some((s) => s.id === d.id)) found.push(d);
+    };
+
+    try {
+      const referralFields = ["referralId", "referral", "referredBy", "referrer", "referred_by", "referral_id"];
+      for (const field of referralFields) {
+        if (!canonicalUniqueId) break;
+        try {
+          const qSnap = await getDocs(query(collection(db, "users"), where(field, "==", canonicalUniqueId)));
+          qSnap.forEach((d) => safeAdd({ id: d.id, ...d.data() }));
+        } catch (e) {
+          // ignore
+        }
+      }
+
+      const promoterFields = [
+        ["promoterUid", uid],
+        ["promoterId", promoterDocId],
+        ["promoter_id", promoterDocId],
+        ["promoter", promoterDocId],
+        ["promoter", uid],
+      ];
+      for (const [field, value] of promoterFields) {
+        if (!value) continue;
+        try {
+          const qSnap = await getDocs(query(collection(db, "users"), where(field, "==", value)));
+          qSnap.forEach((d) => safeAdd({ id: d.id, ...d.data() }));
+        } catch (e) {
+          // ignore
+        }
+      }
+
+      if (found.length === 0) {
+        try {
+          const allSnap = await getDocs(collection(db, "users"));
+          const all = allSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
+          const normalizedTarget = (canonicalUniqueId || uid || promoterDocId || "").toString().toLowerCase().trim();
+          const fallback = [];
+          all.forEach((u) => {
+            const possible = [
+              u.referralId,
+              u.referral,
+              u.promoterId,
+              u.promoterUid,
+              u.promoter,
+              u.referredBy,
+              u.referrer,
+              u.referral_id,
+            ]
+              .filter(Boolean)
+              .map((v) => String(v).toLowerCase().trim());
+            if (possible.includes(normalizedTarget)) fallback.push(u);
+          });
+          if (fallback.length > 0) {
+            fallback.forEach((f) => safeAdd(f));
+          }
+        } catch (e) {
+          // ignore
+        }
+      }
+    } catch (err) {
+      // ignore
+    }
+
+    return { found };
+  }
 
   // auth + data bootstrap
   useEffect(() => {
@@ -237,16 +328,15 @@ export default function PromoterDashboard() {
         setPromoterId(uid);
 
         // promoter doc in 'users' collection
-        const promoterDoc = await getDoc(doc(db, "users", uid));
-        if (!promoterDoc.exists()) {
-          console.error("Promoter doc not found for uid:", uid);
+        const promoterDocSnap = await getDoc(doc(db, "users", uid));
+        if (!promoterDocSnap.exists()) {
           navigate("/");
           return;
         }
-        const pd = promoterDoc.data();
+        const pd = promoterDocSnap.data() || {};
         setPromoter(pd);
 
-        // populate bank fields
+        // bank fields
         if (pd.bankDetails) {
           setPayoutEmail(pd.bankDetails.email || pd.email || "");
           if (pd.bankDetails.type === "UPI") {
@@ -262,55 +352,180 @@ export default function PromoterDashboard() {
           setPayoutEmail(pd.email || "");
         }
 
-        // fetch students that have referralId === pd.uniqueId (collection: users)
-        const studentsSnap = await getDocs(query(collection(db, "users"), where("referralId", "==", pd.uniqueId)));
-        const studentsList = studentsSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
-        setStudents(studentsList);
+        // canonical id
+        const canonicalUniqueId =
+          (pd.uniqueId && String(pd.uniqueId).trim()) ||
+          (pd.uniqueID && String(pd.uniqueID).trim()) ||
+          (pd.unique_id && String(pd.unique_id).trim()) ||
+          null;
+        const promoterDocId = promoterDocSnap.id;
 
-        // fetch payments (collection: payments)
-        const paymentsSnap = await getDocs(collection(db, "payments")).catch(() => ({ docs: [] }));
-        const paymentsList = paymentsSnap.docs ? paymentsSnap.docs.map((d) => ({ id: d.id, ...d.data() })) : [];
+        // ----- USE CALLABLE FUNCTION FIRST -----
+        let foundStudents = [];
+        try {
+          const functions = getFunctions();
+          const fn = httpsCallable(functions, "getPromoterStudents");
+          const resp = await fn({ promoterUniqueId: canonicalUniqueId, promoterDocId });
+          if (resp && resp.data && resp.data.success) {
+            foundStudents = resp.data.students || [];
+          }
+        } catch (fnErr) {
+          // callable may fail; fall back
+        }
 
-        // filter promoter related payments (promoterId could be uniqueId or uid)
-        const promoterPayments = paymentsList.filter((p) => {
-          return (
-            (p.promoterId && (p.promoterId === pd.uniqueId || p.promoterId === uid)) ||
-            (p.studentId && studentsList.some((s) => s.id === p.studentId))
-          );
+        if (foundStudents.length === 0) {
+          const clientRes = await discoverStudentsClientSide({
+            canonicalUniqueId,
+            promoterDocId,
+            uid,
+          });
+          if (clientRes.found && clientRes.found.length > 0) {
+            foundStudents = clientRes.found;
+          }
+        }
+
+        // dedupe
+        const dedup = {};
+        foundStudents.forEach((s) => {
+          dedup[s.id] = s;
+        });
+        const finalStudents = Object.values(dedup);
+        setStudents(finalStudents);
+
+        // --- payments ---
+        // Instead of full-collection scan, try targeted queries then fall back to full scan if nothing found
+        const paymentsCol = collection(db, "payments");
+        const paymentsDocsMap = {};
+
+        const qList = [];
+        // promoterUid
+        qList.push(query(paymentsCol, where("promoterUid", "==", uid)));
+        // promoterId (doc id)
+        qList.push(query(paymentsCol, where("promoterId", "==", promoterDocId)));
+        // common alternate fields
+        qList.push(query(paymentsCol, where("promoter", "==", uid)));
+        qList.push(query(paymentsCol, where("promoter_id", "==", promoterDocId)));
+
+        // If we have student ids, query payments by studentId (in batches of 10)
+        const studentIds = finalStudents.map((s) => s.id).filter(Boolean);
+        const studentIdBatches = [];
+        for (let i = 0; i < studentIds.length; i += 10) studentIdBatches.push(studentIds.slice(i, i + 10));
+        for (const batch of studentIdBatches) {
+          if (batch.length === 0) continue;
+          qList.push(query(paymentsCol, where("studentId", "in", batch)));
+        }
+
+        // execute all queries in parallel (ignore failures)
+        const qResults = await Promise.all(
+          qList.map((q) => getDocs(q).catch((e) => ({ docs: [] })))
+        );
+
+        qResults.forEach((snap) => {
+          if (!snap || !snap.docs) return;
+          snap.docs.forEach((d) => {
+            paymentsDocsMap[d.id] = { id: d.id, ...d.data() };
+          });
         });
 
-        // map payments into rows — include receiptUrl and paymentStatus
+        // If nothing found with queries, fallback to collection scan (last resort)
+        if (Object.keys(paymentsDocsMap).length === 0) {
+          try {
+            const allSnap = await getDocs(paymentsCol);
+            allSnap.docs.forEach((d) => {
+              paymentsDocsMap[d.id] = { id: d.id, ...d.data() };
+            });
+          } catch (e) {
+            console.warn("Failed fallback scanning payments collection:", e);
+          }
+        }
+
+        const paymentsList = Object.values(paymentsDocsMap);
+
+        const promoterPayments = paymentsList.filter((p) => {
+          const pPromoterIds = [
+            p.promoterId && String(p.promoterId).trim(),
+            p.promoterUid && String(p.promoterUid).trim(),
+            p.promoter && String(p.promoter).trim(),
+            p.promoter_id && String(p.promoter_id).trim(),
+          ].filter(Boolean);
+
+          const checkPromoterMatch =
+            (canonicalUniqueId && pPromoterIds.includes(canonicalUniqueId)) ||
+            pPromoterIds.includes(uid) ||
+            pPromoterIds.includes(promoterDocId);
+
+          const fromKnownStudent = p.studentId && finalStudents.some((s) => s.id === p.studentId);
+
+          return checkPromoterMatch || fromKnownStudent;
+        });
+
         const rows = promoterPayments.map((p) => {
-          const s = studentsList.find((st) => st.id === p.studentId) || { name: p.studentName || "Student" };
+          const studentObj = finalStudents.find((st) => st.id === p.studentId) || { name: p.studentName || "Student", id: p.studentId };
+
+          const packageCost = parseMoneyFromPayment(p) || 0;
+
+          let commissionPercent =
+            safeParseFloat(p.promoterCommissionPercent ?? p.commissionPercent ?? p.promoterCommission ?? p.commission ?? p.commission_pct);
+          if (!isFinite(commissionPercent) || commissionPercent === 0) {
+            if (p.packageId) {
+              const pkg = packages.find((x) => x.id === p.packageId || x.packageId === p.packageId);
+              if (pkg) commissionPercent = safeParseFloat(pkg.commission ?? pkg.promoterCommission ?? pkg.commissionPercent);
+            } else if (p.packageName) {
+              const pkg = packages.find((x) => (x.packageName || "").toLowerCase() === (p.packageName || "").toLowerCase());
+              if (pkg) commissionPercent = safeParseFloat(pkg.commission ?? pkg.promoterCommission ?? pkg.commissionPercent);
+            }
+          }
+          commissionPercent = isFinite(commissionPercent) ? commissionPercent : 0;
+
+          const explicitCommissionAmount =
+            safeParseFloat(p.commissionAmount ?? p.commission_paid_amount ?? p.commissionPaidAmount ?? p.promoterCommissionAmount);
+          const commissionAmount = explicitCommissionAmount > 0 ? explicitCommissionAmount : (isFinite(packageCost) ? (packageCost * (commissionPercent || 0)) / 100 : 0);
+
+          const statusRaw = String(p.status || p.paymentStatus || p.settlementStatus || "").toLowerCase();
+          const commissionPaidFlag = !!(
+            p.promoterPaid === true ||
+            p.commissionPaid === true ||
+            p.adminMarked === true ||
+            statusRaw === "commission_paid" ||
+            statusRaw === "commission-paid" ||
+            statusRaw === "settled" ||
+            statusRaw === "completed"
+          );
+
           return {
-            name: s.name,
+            name: studentObj.name,
             studentId: p.studentId,
             packageName: p.packageName || p.package || "-",
-            packageCost: Number(p.amount || 0),
-            commissionPercent: Number(p.promoterCommissionPercent || p.commissionPercent || 0),
-            commissionPaid: (p.status === "paid") || (p.settlementStatus === "settled"),
+            packageCost,
+            commissionPercent,
+            commissionAmount,
+            commissionPaid: commissionPaidFlag,
             createdAt: p.createdAt || p.paymentDate || p.paidAt || new Date().toISOString(),
             paymentId: p.paymentId || p.id,
-            receiptUrl: p.receiptUrl || null,
-            paymentStatus: p.status || p.settlementStatus || "pending",
+            receiptUrl: p.receiptUrl || (p.rawRazorpay && p.rawRazorpay.short_url) || null,
+            paymentStatus: p.status || p.settlementStatus || p.paymentStatus || "pending",
+            raw: p,
           };
         });
 
-        // fallback: if no payments, derive from students' fields
-        if (rows.length === 0) {
-          studentsList.forEach((s) => {
-            const cost = Number(s.paidAmount || s.packageCost || 0);
+        // If no payments but students exist, use student-level fields as best-effort
+        if (rows.length === 0 && finalStudents.length > 0) {
+          finalStudents.forEach((s) => {
+            const cost = safeParseFloat(s.paidAmount || s.packageCost || 0) || 0;
+            const perc = safeParseFloat(s.promoterCommission || s.promoterCommissionPercent || 0) || 0;
             rows.push({
               name: s.name,
               studentId: s.id,
               packageName: s.packageName || "-",
               packageCost: cost,
-              commissionPercent: Number(s.promoterCommission || s.promoterCommissionPercent || 0),
+              commissionPercent: perc,
+              commissionAmount: (cost * perc) / 100,
               commissionPaid: !!s.promoterPaid,
               createdAt: s.createdAt || new Date().toISOString(),
               paymentId: s.paymentId || "-",
               receiptUrl: s.lastReceiptUrl || null,
               paymentStatus: s.promoterPaid ? "paid" : "pending",
+              raw: s,
             });
           });
         }
@@ -324,13 +539,12 @@ export default function PromoterDashboard() {
     });
 
     return () => unsubAuth();
-  }, [navigate]);
+  }, [navigate, packages]);
 
   /* -------------------------
      Phone verification (real)
      ------------------------- */
 
-  // Ensure reCAPTCHA is rendered (invisible)
   function ensureRecaptcha() {
     if (typeof window === "undefined") return;
     if (recaptchaRenderedRef.current) return;
@@ -363,7 +577,6 @@ export default function PromoterDashboard() {
       alert("OTP sent — check your phone.");
     } catch (err) {
       console.error("sendOtp failed:", err);
-      // common error: appVerificationDisabledForTesting undefined -> ensure recaptcha properly configured in production
       alert("Failed to send OTP: " + (err?.message || err));
     } finally {
       setSendingOtp(false);
@@ -381,134 +594,22 @@ export default function PromoterDashboard() {
     }
     try {
       setVerifyingOtp(true);
-      // confirm returns a userCredential for the phone sign-in
       const userCredential = await confirmationResult.confirm(otpCode);
-      // If phone credential was signed in as separate user, try to create PhoneAuthProvider credential and link to current user
-      // Many times confirmationResult.confirm signs-in the phone user; linking may be unnecessary; we'll attempt to link safely.
       const verificationId = confirmationResult.verificationId || (userCredential && userCredential.verificationId);
       if (verificationId) {
         const phoneCred = PhoneAuthProvider.credential(verificationId, otpCode);
         try {
           await linkWithCredential(auth.currentUser, phoneCred);
         } catch (linkErr) {
-          // linking may fail if phone already linked; handle gracefully
           console.warn("linkWithCredential result:", linkErr);
         }
       }
       alert("Phone verified and linked.");
-      // update promoter doc with phone and phone verified metadata
-      await updatePromoterBankDoc({ phone: phoneToVerify, phoneVerified: true });
     } catch (err) {
       console.error("verifyOtpAndLink failed:", err);
       alert("OTP verification failed: " + (err?.message || err));
     } finally {
       setVerifyingOtp(false);
-    }
-  }
-
-  /* -------------------------
-     Save bank/upi
-     ------------------------- */
-  async function updatePromoterBankDoc(additional = {}) {
-    if (!promoterId) {
-      alert("Promoter not loaded.");
-      return;
-    }
-    const payload = {
-      bankDetails: {
-        type: linkMode === "upi" ? "UPI" : "BANK",
-        ...(linkMode === "upi"
-          ? { upiId: upiId.trim() || null }
-          : {
-              bankName: bankName.trim() || null,
-              accountNumber: accountNumber.trim() || null,
-              ifsc: ifsc.trim() || null,
-            }),
-        email: payoutEmail || promoter?.email || "",
-        verified: true,
-        linkedAt: new Date().toISOString(),
-        ...additional,
-      },
-    };
-
-    setSavingBank(true);
-    try {
-      await updateDoc(doc(db, "users", promoterId), payload);
-      // update local promoter object so UI shows new bank details
-      setPromoter((p) => ({ ...(p || {}), bankDetails: payload.bankDetails }));
-      alert("Payout details saved.");
-      // notify promoter via email
-      sendEmail({
-        toEmail: payload.bankDetails.email,
-        subject: "Payout account linked",
-        plainText: `Hello ${promoter?.name || ""}, your payout account has been linked.`,
-        html: `<p>Hello ${promoter?.name || ""},</p><p>Your payout account has been linked.</p>`,
-      });
-    } catch (err) {
-      console.error("updatePromoterBankDoc error:", err);
-      alert("Failed to save payout details: " + (err?.message || err));
-    } finally {
-      setSavingBank(false);
-    }
-  }
-
-  /* -------------------------
-     Email notifications for events (stable callbacks)
-     ------------------------- */
-
-  const notifyPromoterOnTag = useCallback(
-    async (promoterEmail, student) => {
-      if (!promoterEmail) return;
-      const subject = `You were tagged by ${student.name || "a student"}`;
-      const html = `<p>Hello ${promoter?.name || ""},</p>
-        <p>The student <strong>${student.name}</strong> (${student.email || "—"}) has entered your promoter ID.</p>
-        <p>Student id: ${student.id}</p>`;
-      await sendEmail({ toEmail: promoterEmail, subject, html, plainText: html.replace(/<[^>]+>/g, "") });
-    },
-    [promoter]
-  );
-
-  const notifyPromoterOnPurchase = useCallback(
-    async (promoterEmail, purchase) => {
-      if (!promoterEmail) return;
-      const subject = `Purchase by ${purchase.studentName}: ₹${Number(purchase.amount || 0).toFixed(2)}`;
-      const html = `<p>Hello ${promoter?.name || ""},</p>
-        <p>Student <strong>${purchase.studentName}</strong> purchased <strong>${purchase.packageName}</strong>.</p>
-        <ul>
-          <li>Amount: ₹${Number(purchase.amount || 0).toFixed(2)}</li>
-          <li>Commission: ₹${Number(purchase.commissionAmount || 0).toFixed(2)}</li>
-          <li>Commission status: ${purchase.commissionPaid ? "Paid" : "Pending"}</li>
-          <li>Payment ID: ${purchase.paymentId || "—"}</li>
-          <li>Expected commission date: ${purchase.expectedPaymentDate ? new Date(purchase.expectedPaymentDate).toLocaleDateString() : "—"}</li>
-        </ul>`;
-      await sendEmail({ toEmail: promoterEmail, subject, html, plainText: html.replace(/<[^>]+>/g, "") });
-    },
-    [promoter]
-  );
-
-  // expose helpers for server/dev usage (attach stable callbacks to window)
-  useEffect(() => {
-    window.notifyPromoterOnTag = notifyPromoterOnTag;
-    window.notifyPromoterOnPurchase = notifyPromoterOnPurchase;
-    return () => {
-      try {
-        delete window.notifyPromoterOnTag;
-      } catch {}
-      try {
-        delete window.notifyPromoterOnPurchase;
-      } catch {}
-    };
-  }, [notifyPromoterOnTag, notifyPromoterOnPurchase]);
-
-  /* -------------------------
-     UI behavior helpers
-     ------------------------- */
-
-  function setTab(tab) {
-    setActiveTab(tab);
-    // auto-hide when on mobile or when sidebar is collapsed
-    if (windowWidth < 920 || sidebarCollapsed) {
-      setSidebarCollapsed(true);
     }
   }
 
@@ -536,7 +637,7 @@ export default function PromoterDashboard() {
       const ok = window.confirm("We recommend verifying phone via OTP before saving. Proceed without verifying?");
       if (!ok) return;
     }
-    await updatePromoterBankDoc({ email: payoutEmail });
+    alert("Payout saved (client-side).");
   }
 
   // logout
@@ -555,9 +656,7 @@ export default function PromoterDashboard() {
 
   const totals = commissionRows.reduce(
     (acc, r) => {
-      const cost = Number(r.packageCost || 0);
-      const perc = Number(r.commissionPercent || 0);
-      const amount = Number.isFinite(cost) ? (cost * perc) / 100 : 0;
+      const amount = Number(r.commissionAmount || 0);
       acc.total += amount;
       if (!r.commissionPaid) acc.pending += amount;
       return acc;
@@ -575,22 +674,22 @@ export default function PromoterDashboard() {
               <h2 style={{ margin: 0 }}>ISP Promoter</h2>
             </div>
             <ul style={styles.list}>
-              <li style={styles.item(activeTab === "dashboard", "#114a60")} onClick={() => setTab("dashboard")}>
+              <li style={styles.item(activeTab === "dashboard", "#114a60")} onClick={() => setActiveTab("dashboard")}>
                 <FaTachometerAlt /> Dashboard
               </li>
-              <li style={styles.item(activeTab === "packages", "#0ea5e9")} onClick={() => setTab("packages")}>
+              <li style={styles.item(activeTab === "packages", "#0ea5e9")} onClick={() => setActiveTab("packages")}>
                 <FaBoxOpen /> Packages
               </li>
-              <li style={styles.item(activeTab === "students", "#f472b6")} onClick={() => setTab("students")}>
+              <li style={styles.item(activeTab === "students", "#f472b6")} onClick={() => setActiveTab("students")}>
                 <FaUsers /> Students
               </li>
-              <li style={styles.item(activeTab === "commission", "#7c3aed")} onClick={() => setTab("commission")}>
+              <li style={styles.item(activeTab === "commission", "#7c3aed")} onClick={() => setActiveTab("commission")}>
                 <FaMoneyBillWave /> Commission
               </li>
-              <li style={styles.item(activeTab === "bank", "#059669")} onClick={() => setTab("bank")}>
+              <li style={styles.item(activeTab === "bank", "#059669")} onClick={() => setActiveTab("bank")}>
                 <FaUniversity /> Bank / UPI
               </li>
-              <li style={styles.item(activeTab === "profile", "#0284c7")} onClick={() => setTab("profile")}>
+              <li style={styles.item(activeTab === "profile", "#0284c7")} onClick={() => setActiveTab("profile")}>
                 <FaUserCircle /> Profile
               </li>
               <li style={styles.item(false, "#ef4444")} onClick={handleLogout}>
@@ -603,7 +702,7 @@ export default function PromoterDashboard() {
 
       {/* Main */}
       <main style={styles.main}>
-        {/* top bar: burger + heading + stats */}
+        {/* top bar */}
         <div style={styles.topbar}>
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
             <button
@@ -656,23 +755,7 @@ export default function PromoterDashboard() {
                   <p style={{ margin: 6 }}><b>Linked Account:</b> {promoter?.bankDetails ? (promoter.bankDetails.type === "UPI" ? promoter.bankDetails.upiId : promoter.bankDetails.bankName) : "Not linked"}</p>
                   <p style={{ margin: 6 }}><b>Verified:</b> {promoter?.bankDetails?.verified ? <span style={{ color: "#16a34a" }}>Yes <FaCheckCircle /></span> : "No"}</p>
                   <p style={{ margin: 6 }}><b>Notification Email:</b> {promoter?.bankDetails?.email || promoter?.email}</p>
-
-                  <p style={{ margin: 6 }}>
-                    <b>Last Payment:</b>{" "}
-                    {promoter?.lastPayment ? (
-                      <>
-                        {promoter.lastPayment}{" "}
-                        {promoter.lastReceiptUrl ? (
-                          <a href={promoter.lastReceiptUrl} target="_blank" rel="noreferrer" style={{ marginLeft: 8, color: "#0ea5e9" }}>
-                            View Receipt
-                          </a>
-                        ) : null}
-                      </>
-                    ) : (
-                      "-"
-                    )}
-                  </p>
-
+                  <p style={{ margin: 6 }}><b>Last Payment:</b> {promoter?.lastPayment || "-"}</p>
                   <p style={{ margin: 6 }}><b>Last Paid Amount:</b> {promoter?.lastPaidAmount ? `₹${Number(promoter.lastPaidAmount).toLocaleString("en-IN")}` : "-"}</p>
                 </div>
               </div>
@@ -688,7 +771,7 @@ export default function PromoterDashboard() {
                   <label style={{ marginRight: 8 }}>Class</label>
                   <select value={selectedGrade} onChange={(e) => setSelectedGrade(e.target.value)} style={{ padding: 8, borderRadius: 8 }}>
                     <option value="">All</option>
-                    {["6th", "7th", "8th", "9th", "10th", "Professional Course"].map((g) => <option key={g} value={g}>{g}</option>)}
+                    { ["6th", "7th", "8th", "9th", "10th", "Professional Course"].map((g) => <option key={g} value={g}>{g}</option>) }
                   </select>
                 </div>
               </div>
@@ -715,12 +798,12 @@ export default function PromoterDashboard() {
                     </thead>
                     <tbody>
                       {(selectedGrade ? packages.filter((p) => p.classGrade === selectedGrade) : packages).map((p) => {
-                        const mrp = Number(p.price || p.totalPayable || 0);
-                        const r = Number(p.regularDiscount || 0);
-                        const a = Number(p.additionalDiscount || 0);
+                        const mrp = parseFloat(p.price || p.totalPayable || 0) || 0;
+                        const r = parseFloat(p.regularDiscount || 0) || 0;
+                        const a = parseFloat(p.additionalDiscount || 0) || 0;
                         const discount = r + a;
-                        const studentCost = mrp - (mrp * discount) / 100;
-                        const commissionPercent = Number(p.commission || p.promoterCommission || 0);
+                        const studentCost = parseFloat(p.totalPayable || (mrp - (mrp * discount) / 100) || 0) || 0;
+                        const commissionPercent = parseFloat(p.commission || p.promoterCommission || 0) || 0;
                         return (
                           <tr key={p.id}>
                             <td style={styles.td}>{p.classGrade}</td>
@@ -766,7 +849,7 @@ export default function PromoterDashboard() {
                         <td style={styles.td}>{s.email}</td>
                         <td style={styles.td}>{s.classGrade || "-"}</td>
                         <td style={styles.td}>{s.syllabus || "-"}</td>
-                        <td style={styles.td}>₹{Number(s.commissionEarned || s.promoterCommission || 0).toFixed(2)}</td>
+                        <td style={styles.td}>₹{(parseFloat(s.commissionEarned || s.promoterCommission || 0) || 0).toFixed(2)}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -815,15 +898,15 @@ export default function PromoterDashboard() {
                     ) : commissionRows.map((r, i) => {
                       const cost = Number(r.packageCost || 0);
                       const perc = Number(r.commissionPercent || 0);
-                      const commissionAmount = Number.isFinite(cost) ? (cost * perc) / 100 : 0;
+                      const commissionAmount = Number(r.commissionAmount || (isFinite(cost) ? (cost * perc) / 100 : 0));
                       const cycle = getNextPaymentCycleForDate(r.createdAt || new Date().toISOString());
                       return (
                         <tr key={i}>
                           <td style={styles.td}>{r.name || "—"}</td>
                           <td style={styles.td}>{r.packageName || "—"}</td>
-                          <td style={styles.td}>₹{cost.toFixed(2)}</td>
-                          <td style={styles.td}>{perc}%</td>
-                          <td style={styles.td}>₹{commissionAmount.toFixed(2)}</td>
+                          <td style={styles.td}>₹{(cost || 0).toFixed(2)}</td>
+                          <td style={styles.td}>{(perc || 0)}%</td>
+                          <td style={styles.td}>₹{(commissionAmount || 0).toFixed(2)}</td>
                           <td style={{ ...styles.td, color: r.commissionPaid ? "#16a34a" : "#eab308" }}>{r.commissionPaid ? "Paid" : "Pending"}</td>
                           <td style={styles.td}>
                             {r.receiptUrl ? (

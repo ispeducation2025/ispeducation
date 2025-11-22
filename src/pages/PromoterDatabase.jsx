@@ -1,4 +1,4 @@
-// src/pages/PromoterDatabase.jsx
+/* eslint-disable */
 import React, { useEffect, useState, useRef } from "react";
 import { db, auth, storage } from "../firebase/firebaseConfig";
 import {
@@ -8,18 +8,13 @@ import {
   updateDoc,
   addDoc,
   serverTimestamp,
+  getDoc,
+  query,
+  where,
 } from "firebase/firestore";
+import { getFunctions, httpsCallable } from "firebase/functions";
 import { useNavigate } from "react-router-dom";
 import { ref as storageRef, uploadBytesResumable, getDownloadURL } from "firebase/storage";
-
-/**
- * PromoterDatabase.jsx — manual payout (Add Paid Details + receipt upload)
- *
- * Improvements:
- * - Uses uploadBytesResumable with a timeout to avoid indefinite "Processing..."
- * - Detailed console logs & visible alerts on errors
- * - Ensures setProcessing(false) runs on all code paths
- */
 
 // ========== ADMIN UID (same as Cloud Functions) ==========
 const ADMIN_UID = "Q3Z7mgam8IOMQWQqAdwWEQmpqNn2";
@@ -28,6 +23,8 @@ const ADMIN_UID = "Q3Z7mgam8IOMQWQqAdwWEQmpqNn2";
 export default function PromoterDatabase() {
   const [promoters, setPromoters] = useState([]);
   const [selectedPromoter, setSelectedPromoter] = useState(null);
+  const [studentsForPromoter, setStudentsForPromoter] = useState([]);
+  const [showStudentModal, setShowStudentModal] = useState(false);
   const panelRef = useRef(null);
   const navigate = useNavigate();
 
@@ -38,22 +35,180 @@ export default function PromoterDatabase() {
   const [receiptFile, setReceiptFile] = useState(null);
   const [processing, setProcessing] = useState(false);
 
+  // Payments cache
+  const [paymentsCache, setPaymentsCache] = useState([]);
+  const [loading, setLoading] = useState(true);
+
   useEffect(() => {
-    const fetchPromoters = async () => {
-      try {
-        const snapshot = await getDocs(collection(db, "users"));
-        const promoterList = snapshot.docs
-          .map((d) => ({ id: d.id, ...d.data() }))
-          .filter((p) => p.role === "promoter" || p.alsoPromoter === true);
-        setPromoters(promoterList);
-      } catch (err) {
-        console.error("Error fetching promoters:", err);
-      }
-    };
-    fetchPromoters();
+    loadAllData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Close panel on outside click
+  // Combined loader: promoters + payments
+  const loadAllData = async () => {
+    setLoading(true);
+    try {
+      // 1) load users (promoters)
+      const usersSnap = await getDocs(collection(db, "users"));
+      const promoterList = usersSnap.docs
+        .map((d) => ({ id: d.id, ...d.data() }))
+        .filter((p) => p.role === "promoter" || p.alsoPromoter === true);
+
+      // 2) load payments (only necessary fields)
+      const paymentsSnap = await getDocs(collection(db, "payments"));
+      const payments = paymentsSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
+
+      setPaymentsCache(payments);
+
+      // 3) compute derived promoter fields from payments
+      const promoterMap = {};
+      // helper normalize
+      const norm = (v) => (v || "").toString().toLowerCase().trim();
+
+      for (const p of promoterList) {
+        promoterMap[p.id] = {
+          ...p,
+          computed_pendingAmount: 0,
+          computed_totalCommission: 0,
+          computed_lastPaymentAt: p.lastPayment || null,
+          computed_lastPaidAmount: p.lastPaidAmount || null,
+          computed_commissionRowsCount: 0,
+        };
+      }
+
+      // Build a fast lookup by promoter unique identifiers too (uniqueId values)
+      const uidToPromoterId = {};
+      for (const p of promoterList) {
+        const keys = [
+          p.id && p.id.toString(),
+          p.uid && p.uid.toString(),
+          p.uniqueId && p.uniqueId.toString(),
+          p.referralId && p.referralId.toString(),
+          p.promoterId && p.promoterId.toString(),
+        ].filter(Boolean);
+        keys.forEach((k) => {
+          uidToPromoterId[norm(k)] = p.id;
+        });
+      }
+
+      // scan payments and attribute to promoter map
+      for (const pay of payments) {
+        // gather many variants to match
+        const candidates = new Set();
+        [
+          pay.promoterUid,
+          pay.promoterId,
+          pay.promoter,
+          pay.promoter_id,
+          pay.promoterUniqueId,
+          pay.promoterUniqueID,
+          pay.mappedPromoter,
+          pay.promoterUniqueId || (pay.promoterResolved && pay.promoterResolved.promoterUniqueId),
+          pay.promoterUid || (pay.promoterResolved && pay.promoterResolved.promoterUid),
+        ]
+          .filter(Boolean)
+          .forEach((x) => candidates.add(norm(x)));
+
+        // also check payment.raw fields (some gateway payload)
+        if (pay.raw && typeof pay.raw === "object") {
+          const raw = JSON.stringify(pay.raw);
+          // cheap: if promoter unique id string appears anywhere - not perfect but okay as fallback
+          // (we avoid making heavy parsing here)
+          // skip for now
+        }
+
+        // try direct matches to user doc id or mapped unique id
+        let matchedPromoterId = null;
+        for (const c of candidates) {
+          if (uidToPromoterId[c]) {
+            matchedPromoterId = uidToPromoterId[c];
+            break;
+          }
+        }
+
+        // fallback: try to match by exact strings stored in user fields
+        if (!matchedPromoterId) {
+          // attempt brute force: check every promoter against common fields in payment
+          for (const p of promoterList) {
+            const possible = [
+              p.referralId,
+              p.referral,
+              p.promoterId,
+              p.promoterUid,
+              p.promoter,
+              p.referredBy,
+              p.referrer,
+              p.referral_id,
+              p.uniqueId,
+            ]
+              .filter(Boolean)
+              .map((v) => norm(v));
+            const has = [...candidates].some((c) => possible.includes(c));
+            if (has) {
+              matchedPromoterId = p.id;
+              break;
+            }
+          }
+        }
+
+        if (!matchedPromoterId) continue; // payment not attributable to any promoter in list
+
+        // compute commission amount for this payment
+        // Payment may carry commissionTotal or commissionAmount fields or packages[] with commissionAmount
+        let commissionAmount = 0;
+        if (pay.commissionTotal) commissionAmount = Number(pay.commissionTotal) || 0;
+        else if (pay.commissionAmount) commissionAmount = Number(pay.commissionAmount) || 0;
+        else if (Array.isArray(pay.packages)) {
+          commissionAmount = pay.packages.reduce((s, x) => s + (Number(x.commissionAmount || x.commission || 0) || 0), 0);
+        } else {
+          // try common single-field fallbacks
+          commissionAmount = Number(pay.promoterCommissionAmount || pay.commission || 0) || 0;
+        }
+
+        // determine if commission already marked paid to promoter
+        const commissionPaidFlag =
+          pay.promoterPaid === true ||
+          pay.commissionPaid === true ||
+          pay.adminMarked === true ||
+          ["commission_paid", "settled", "completed"].includes((pay.status || pay.paymentStatus || pay.settlementStatus || "").toString().toLowerCase());
+
+        // update promoter map
+        const m = promoterMap[matchedPromoterId];
+        if (!m) continue;
+        m.computed_totalCommission = (m.computed_totalCommission || 0) + commissionAmount;
+        if (!commissionPaidFlag) {
+          m.computed_pendingAmount = (m.computed_pendingAmount || 0) + commissionAmount;
+        }
+        m.computed_commissionRowsCount = (m.computed_commissionRowsCount || 0) + 1;
+
+        // update last payment info (use paidAt or createdAt)
+        const candidateDate = pay.paidAt || pay.paidAt?.seconds ? pay.paidAt : pay.createdAt || pay.createdAtClient || pay.paidAt;
+        const candTime = candidateDate && candidateDate.seconds ? candidateDate.seconds * 1000 : candidateDate ? new Date(candidateDate).getTime() : 0;
+        const prevTime = m.computed_lastPaymentAt ? (m.computed_lastPaymentAt.seconds ? m.computed_lastPaymentAt.seconds * 1000 : new Date(m.computed_lastPaymentAt).getTime()) : 0;
+        if (candTime && candTime > prevTime) {
+          m.computed_lastPaymentAt = candidateDate;
+          m.computed_lastPaidAmount = pay.amount || pay.commissionAmount || commissionAmount || m.computed_lastPaidAmount;
+        }
+      } // end payments loop
+
+      // Build final promoters array with computed fields
+      const finalPromoters = Object.values(promoterMap).map((p) => ({
+        ...p,
+        // ensure numeric
+        computed_pendingAmount: Number(p.computed_pendingAmount || 0),
+        computed_totalCommission: Number(p.computed_totalCommission || 0),
+        computed_commissionRowsCount: Number(p.computed_commissionRowsCount || 0),
+      }));
+
+      setPromoters(finalPromoters);
+    } catch (err) {
+      console.error("Error loading promoters/payments:", err);
+      alert("Failed to load data — check console.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
   useEffect(() => {
     const handleClickOutside = (e) => {
       if (panelRef.current && !panelRef.current.contains(e.target)) {
@@ -64,10 +219,9 @@ export default function PromoterDatabase() {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
-  // open manual "Add Paid Details" modal (admin will upload receipt & fill amount)
   const openAddPaidModal = (promoter) => {
     setSelectedPromoter(promoter);
-    setPaidAmount(promoter?.pendingAmount ? String(promoter.pendingAmount) : "");
+    setPaidAmount(promoter?.computed_pendingAmount ? String(promoter.computed_pendingAmount) : String(promoter.pendingAmount || ""));
     setPaidNote("");
     setReceiptFile(null);
     setShowPayModal(true);
@@ -81,7 +235,6 @@ export default function PromoterDatabase() {
     setReceiptFile(null);
   };
 
-  // helper: upload with resumable + timeout
   const uploadFileWithTimeout = (file, path, timeoutMs = 60_000) => {
     return new Promise((resolve, reject) => {
       if (!storage) {
@@ -95,7 +248,6 @@ export default function PromoterDatabase() {
         const timer = setTimeout(() => {
           timedOut = true;
           try {
-            // attempt to cancel the task (may throw in some SDK versions)
             if (typeof task.cancel === "function") task.cancel();
           } catch (e) {
             console.warn("Error cancelling upload after timeout:", e);
@@ -106,9 +258,7 @@ export default function PromoterDatabase() {
         task.on(
           "state_changed",
           (snapshot) => {
-            // optional: progress logging
-            const pct = ((snapshot.bytesTransferred / snapshot.totalBytes) * 100).toFixed(1);
-            // eslint-disable-next-line no-console
+            const pct = snapshot.totalBytes ? ((snapshot.bytesTransferred / snapshot.totalBytes) * 100).toFixed(1) : "0";
             console.log(`Upload progress: ${pct}% (${snapshot.bytesTransferred}/${snapshot.totalBytes})`);
           },
           (error) => {
@@ -135,34 +285,32 @@ export default function PromoterDatabase() {
     });
   };
 
+  const refreshPromoters = async () => {
+    await loadAllData();
+  };
+
   // upload receipt to storage and create payments doc + update promoter doc
   const submitManualPayment = async () => {
     if (!selectedPromoter) return alert("No promoter selected.");
     const amt = Number(paidAmount);
-    if (!amt || amt <= 0) return alert("Enter valid paid amount.");
+    if (!amt || amt <= 0) return alert("Enter a valid paid amount.");
 
     // Admin auth check
     const current = auth.currentUser;
-    if (!current) return alert("Please login as admin to mark payment.");
-    if (current.uid !== ADMIN_UID) return alert("Only admin can mark payments.");
+    if (!current) return alert("Please log in as admin to mark payment.");
+    if (current.uid !== ADMIN_UID) return alert("Only admin (configured UID) can mark payments from this UI.");
 
     setProcessing(true);
-    console.log("submitManualPayment: started", { promoterId: selectedPromoter.id, amt });
 
     try {
       // 1) Upload receipt if provided
       let receiptUrl = null;
       if (receiptFile) {
-        console.log("Uploading receipt:", receiptFile.name);
         try {
           const safeName = `${selectedPromoter.id}_${Date.now()}_${receiptFile.name.replace(/\s+/g, "_")}`;
           const remotePath = `receipts/${safeName}`;
-          // timeout 60s (adjust if needed)
           receiptUrl = await uploadFileWithTimeout(receiptFile, remotePath, 120000);
-          console.log("Receipt uploaded, URL:", receiptUrl);
         } catch (uploadErr) {
-          console.error("Receipt upload failed:", uploadErr);
-          // surface error but allow operator to retry or continue without receipt
           const keepProceed = window.confirm(
             "Receipt upload failed: " + (uploadErr?.message || uploadErr) + "\n\nDo you want to continue and mark payment without uploading receipt?"
           );
@@ -170,76 +318,175 @@ export default function PromoterDatabase() {
             throw uploadErr;
           }
         }
-      } else {
-        console.log("No receipt provided; continuing without upload.");
       }
 
-      // 2) Create payment record in `payments` collection
+      // 2) Prepare payment payload
       const paymentPayload = {
         promoterId: selectedPromoter.id,
         promoterName: selectedPromoter.name || null,
-        amount: amt,
+        amount: amt, // this is commission paid now
+        commissionAmount: amt,
+        commissionPaid: true,
+        promoterPaid: true,
         currency: "INR",
         note: paidNote || "",
-        status: "paid",
+        status: "commission_paid", // explicit status for promoter commission payouts
         receiptUrl: receiptUrl || null,
         paidBy: current.uid,
-        paidAt: serverTimestamp(),
-        createdAt: serverTimestamp(),
+        paidAt: new Date().toISOString(),
+        createdAt: new Date().toISOString(),
+        adminMarked: true,
       };
 
-      console.log("Adding payment doc:", paymentPayload);
-      let paymentRef;
+      // 3) Preferred path: call Cloud Function 'adminCreatePayment' (callable)
+      let paymentDocId = null;
+      const functions = getFunctions();
       try {
-        paymentRef = await addDoc(collection(db, "payments"), paymentPayload);
-        console.log("Payment doc created:", paymentRef.id);
-      } catch (addDocErr) {
-        console.error("Failed creating payment doc:", addDocErr);
-        throw addDocErr;
+        const fn = httpsCallable(functions, "adminCreatePayment");
+        const resp = await fn({ payment: paymentPayload });
+        if (resp && resp.data && (resp.data.success || resp.data.id)) {
+          paymentDocId = resp.data.id || resp.data.paymentId || null;
+        }
+      } catch (fnErr) {
+        // callable may fail; fall back
       }
 
-      // 3) Update promoter user doc: lastPayment, lastPaidAmount, promoterPaid true, reduce pendingAmount
+      // 4) Fallback: attempt client-side addDoc only if callable didn't create doc
+      if (!paymentDocId) {
+        try {
+          const pRef = await addDoc(collection(db, "payments"), {
+            ...paymentPayload,
+            paidAt: serverTimestamp(),
+            createdAt: serverTimestamp(),
+          });
+          paymentDocId = pRef.id;
+        } catch (addDocErr) {
+          throw new Error(
+            "Could not create payment record. Deploy a server callable 'adminCreatePayment' to create payments server-side, or allow admin writes to /payments."
+          );
+        }
+      }
+
+      // 5) (Optional) attempt to update promoter user doc to reflect lastPayment, pending etc.
+      // It's safer to keep computed values derived from /payments (we refresh below).
       try {
         const userRef = doc(db, "users", selectedPromoter.id);
-        const prevPending = Number(selectedPromoter.pendingAmount || 0);
-        const newPending = Math.max(0, prevPending - amt);
-
-        console.log("Updating promoter doc, newPending:", newPending);
         await updateDoc(userRef, {
           lastPayment: new Date().toISOString(),
           lastPaidAmount: amt,
           promoterPaid: true,
-          pendingAmount: newPending,
-          lastReceiptUrl: receiptUrl || null,
+          // do NOT rely on pendingAmount here; recompute from payments on next refresh instead
         });
       } catch (udErr) {
-        // update failed but we still created payment doc — log and continue
         console.warn("Failed to update promoter doc after payment:", udErr);
-        // Surface to admin so they can correct manually
-        alert("Payment created but failed to update promoter record. Check console for details.");
       }
 
-      // 4) Refresh promoter list locally
-      try {
-        const snapshot = await getDocs(collection(db, "users"));
-        const promoterList = snapshot.docs
-          .map((d) => ({ id: d.id, ...d.data() }))
-          .filter((p) => p.role === "promoter" || p.alsoPromoter === true);
-        setPromoters(promoterList);
-      } catch (refreshErr) {
-        console.warn("Failed to refresh promoter list:", refreshErr);
-      }
+      // 6) Refresh promoter entry locally (recompute from payments)
+      await refreshPromoters();
 
-      alert("Marked as paid and uploaded receipt (if provided).");
+      alert("Marked commission as paid and uploaded receipt (if provided).");
       closeAddPaidModal();
     } catch (err) {
-      console.error("submitManualPayment error (final):", err);
+      console.error("submitManualPayment error:", err);
       alert("Failed to submit payment: " + (err?.message || String(err)));
     } finally {
-      // IMPORTANT: always clear processing so UI is usable again
       setProcessing(false);
-      console.log("submitManualPayment: finished (processing=false)");
     }
+  };
+
+  // New: fetch students attached to a promoter (admin-only)
+  const fetchStudentsForPromoter = async (promoter) => {
+    if (!promoter) return setStudentsForPromoter([]);
+    try {
+      const results = [];
+      const seen = new Set();
+
+      const uid = promoter.id || promoter.uid;
+      const uniqueId = promoter.uniqueId || promoter.referralId || promoter.uniqueID || promoter.unique_id || null;
+
+      if (uniqueId) {
+        const q1 = query(collection(db, "users"), where("referralId", "==", uniqueId));
+        const snap1 = await getDocs(q1);
+        snap1.forEach((d) => {
+          if (!seen.has(d.id)) {
+            seen.add(d.id);
+            results.push({ id: d.id, ...d.data() });
+          }
+        });
+
+        const q2 = query(collection(db, "users"), where("referral", "==", uniqueId));
+        const snap2 = await getDocs(q2);
+        snap2.forEach((d) => {
+          if (!seen.has(d.id)) {
+            seen.add(d.id);
+            results.push({ id: d.id, ...d.data() });
+          }
+        });
+      }
+
+      if (uid) {
+        const q3 = query(collection(db, "users"), where("promoterUid", "==", uid));
+        const snap3 = await getDocs(q3);
+        snap3.forEach((d) => {
+          if (!seen.has(d.id)) {
+            seen.add(d.id);
+            results.push({ id: d.id, ...d.data() });
+          }
+        });
+
+        const q4 = query(collection(db, "users"), where("promoterId", "==", uid));
+        const snap4 = await getDocs(q4);
+        snap4.forEach((d) => {
+          if (!seen.has(d.id)) {
+            seen.add(d.id);
+            results.push({ id: d.id, ...d.data() });
+          }
+        });
+
+        const q5 = query(collection(db, "users"), where("promoter", "==", uid));
+        const snap5 = await getDocs(q5);
+        snap5.forEach((d) => {
+          if (!seen.has(d.id)) {
+            seen.add(d.id);
+            results.push({ id: d.id, ...d.data() });
+          }
+        });
+      }
+
+      if (results.length === 0) {
+        const allSnap = await getDocs(collection(db, "users"));
+        allSnap.forEach((d) => {
+          const u = { id: d.id, ...d.data() };
+          const possible = [
+            u.referralId,
+            u.referral,
+            u.promoterId,
+            u.promoterUid,
+            u.promoter,
+            u.referredBy,
+            u.referrer,
+            u.referral_id,
+          ].filter(Boolean).map((v) => String(v).toLowerCase().trim());
+          const normalizedTarget = (uniqueId || uid || "").toString().toLowerCase().trim();
+          if (normalizedTarget && possible.includes(normalizedTarget)) {
+            if (!seen.has(u.id)) {
+              seen.add(u.id);
+              results.push(u);
+            }
+          }
+        });
+      }
+
+      setStudentsForPromoter(results);
+      setShowStudentModal(true);
+    } catch (err) {
+      console.error("fetchStudentsForPromoter failed:", err);
+      alert("Failed to fetch students. Check console for details.");
+    }
+  };
+
+  const openStudents = (promoter) => {
+    fetchStudentsForPromoter(promoter);
   };
 
   const fmt = (v) => (v || v === 0 ? "₹" + Number(v).toLocaleString("en-IN") : "-");
@@ -247,70 +494,88 @@ export default function PromoterDatabase() {
 
   return (
     <div style={{ padding: 20, background: "#f9fafb", minHeight: "100vh" }}>
-      <div style={{ display: "flex", justifyContent: "space-between" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
         <h2 style={{ color: "#0284c7" }}>Promoter Database — Manual Payouts</h2>
-        <button
-          onClick={() => navigate("/admin-dashboard")}
-          style={{ background: "#0284c7", color: "#fff", padding: "8px 16px", borderRadius: 8, border: "none" }}
-        >
-          ← Back
-        </button>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button
+            onClick={refreshPromoters}
+            style={{ background: "#0ea5e9", color: "#fff", padding: "8px 12px", borderRadius: 8, border: "none" }}
+          >
+            Refresh from payments
+          </button>
+          <button
+            onClick={() => navigate("/admin-dashboard")}
+            style={{ background: "#0284c7", color: "#fff", padding: "8px 12px", borderRadius: 8, border: "none" }}
+          >
+            ← Back
+          </button>
+        </div>
       </div>
 
       <div style={{ marginTop: 12 }}>
         <p style={{ color: "#334155" }}>
-          Manual payout flow enabled. Click <b>Add Paid Details</b> to upload PhonePe receipt and mark a promoter's payment as paid.
+          Manual payout flow enabled. This view now computes pending totals from the <code>/payments</code> collection (preferred) — so users.pendingAmount is not required.
         </p>
       </div>
 
       <div style={{ overflowX: "auto", marginTop: 12 }}>
-        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
-          <thead>
-            <tr style={{ background: "#e0f2fe" }}>
-              <th style={thtdStyle}>Name</th>
-              <th style={thtdStyle}>Email</th>
-              <th style={thtdStyle}>Phone</th>
-              <th style={thtdStyle}>Unique ID</th>
-              <th style={thtdStyle}>Pending</th>
-              <th style={thtdStyle}>Last Payment</th>
-              <th style={thtdStyle}>Status</th>
-              <th style={thtdStyle}>Action</th>
-            </tr>
-          </thead>
-          <tbody>
-            {promoters.map((p) => {
-              const status = p.pendingAmount === 0 ? "No Dues" : "Pending";
-              return (
-                <tr key={p.id} style={{ background: "white", cursor: "default" }}>
-                  <td style={thtdStyle}>{p.name}</td>
-                  <td style={thtdStyle}>{p.email}</td>
-                  <td style={thtdStyle}>{p.phone || "-"}</td>
-                  <td style={thtdStyle}>{p.uniqueId}</td>
-                  <td style={thtdStyle}>{fmt(p.pendingAmount)}</td>
-                  <td style={thtdStyle}>{p.lastPayment || "-"}</td>
-                  <td style={{ ...thtdStyle, color: status === "No Dues" ? "green" : "#eab308", fontWeight: 600 }}>{status}</td>
-                  <td style={thtdStyle}>
-                    <button
-                      onClick={() => openAddPaidModal(p)}
-                      style={{ background: "#0ea5e9", color: "white", padding: "6px 10px", borderRadius: 6, border: "none" }}
-                    >
-                      Add Paid Details
-                    </button>
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        window.open(`/promoter-students/${p.id}`, "_self");
-                      }}
-                      style={{ background: "#0ea5e9", color: "white", padding: "6px 10px", marginLeft: 6, borderRadius: 6, border: "none" }}
-                    >
-                      Students
-                    </button>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+        {loading ? (
+          <div style={{ padding: 20, color: "#6b7280" }}>Loading promoters and payments...</div>
+        ) : (
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
+            <thead>
+              <tr style={{ background: "#e0f2fe" }}>
+                <th style={thtdStyle}>Name</th>
+                <th style={thtdStyle}>Email</th>
+                <th style={thtdStyle}>Phone</th>
+                <th style={thtdStyle}>Unique ID</th>
+                <th style={thtdStyle}>Pending (computed)</th>
+                <th style={thtdStyle}>Total Commission</th>
+                <th style={thtdStyle}>Last Payment</th>
+                <th style={thtdStyle}>#Records</th>
+                <th style={thtdStyle}>Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {promoters.map((p) => {
+                const pending = Number(p.computed_pendingAmount ?? p.pendingAmount ?? 0);
+                const totalCommission = Number(p.computed_totalCommission ?? 0);
+                const status = pending === 0 ? "No Dues" : "Pending";
+                const lastPay = p.computed_lastPaymentAt || p.lastPayment || "-";
+                const lastPayStr = lastPay && (lastPay.seconds ? new Date(lastPay.seconds * 1000).toLocaleString() : new Date(lastPay).toLocaleString()) || "-";
+                return (
+                  <tr key={p.id} style={{ background: "white", cursor: "default" }}>
+                    <td style={thtdStyle}>{p.name}</td>
+                    <td style={thtdStyle}>{p.email}</td>
+                    <td style={thtdStyle}>{p.phone || "-"}</td>
+                    <td style={thtdStyle}>{p.uniqueId || p.referralId || "-"}</td>
+                    <td style={thtdStyle}>{fmt(pending)}</td>
+                    <td style={thtdStyle}>{fmt(totalCommission)}</td>
+                    <td style={thtdStyle}>{lastPayStr}</td>
+                    <td style={thtdStyle}>{p.computed_commissionRowsCount || 0}</td>
+                    <td style={thtdStyle}>
+                      <button
+                        onClick={() => openAddPaidModal(p)}
+                        style={{ background: "#0ea5e9", color: "white", padding: "6px 10px", borderRadius: 6, border: "none" }}
+                      >
+                        Add Paid Details
+                      </button>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          openStudents(p);
+                        }}
+                        style={{ background: "#0ea5e9", color: "white", padding: "6px 10px", marginLeft: 6, borderRadius: 6, border: "none" }}
+                      >
+                        View Students
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
       </div>
 
       {/* Add Paid Details modal */}
@@ -326,7 +591,7 @@ export default function PromoterDatabase() {
             zIndex: 2000,
           }}
         >
-          <div style={{ width: 520, background: "white", borderRadius: 8, padding: 20 }}>
+          <div ref={panelRef} style={{ width: 520, background: "white", borderRadius: 8, padding: 20 }}>
             <h3 style={{ marginTop: 0 }}>Add Paid Details — {selectedPromoter.name}</h3>
 
             <div style={{ display: "grid", gap: 10 }}>
@@ -350,12 +615,8 @@ export default function PromoterDatabase() {
               </div>
 
               <div>
-                <label>Upload PhonePe receipt (image or PDF)</label>
-                <input
-                  type="file"
-                  accept="image/*,application/pdf"
-                  onChange={(e) => setReceiptFile(e.target.files?.[0] || null)}
-                />
+                <label>Upload receipt (image or PDF)</label>
+                <input type="file" accept="image/*,application/pdf" onChange={(e) => setReceiptFile(e.target.files?.[0] || null)} />
                 {receiptFile && <div style={{ marginTop: 8, fontSize: 13 }}>{receiptFile.name}</div>}
               </div>
 
@@ -370,7 +631,6 @@ export default function PromoterDatabase() {
                 <button
                   onClick={() => {
                     if (processing) {
-                      // do not close while processing
                       alert("Cannot cancel while processing. Please wait or check the console for errors.");
                       return;
                     }
@@ -385,6 +645,65 @@ export default function PromoterDatabase() {
               <div style={{ color: "#6b7280", fontSize: 13 }}>
                 Tip: if upload gets stuck, check browser console (F12 → Console) and Network tab for errors. Common issues: Storage rules or auth preventing upload, large file size, or network interruption.
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Students modal */}
+      {showStudentModal && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.4)",
+            display: "flex",
+            justifyContent: "center",
+            alignItems: "center",
+            zIndex: 2000,
+          }}
+          onClick={() => setShowStudentModal(false)}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{ width: "80%", maxHeight: "80%", overflowY: "auto", background: "white", borderRadius: 8, padding: 20 }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <h3 style={{ margin: 0 }}>Students for Promoter</h3>
+              <button onClick={() => setShowStudentModal(false)} style={{ padding: 6, borderRadius: 6 }}>Close</button>
+            </div>
+
+            <div style={{ marginTop: 12 }}>
+              {studentsForPromoter.length === 0 ? (
+                <div style={{ color: "#6b7280" }}>No students found for this promoter.</div>
+              ) : (
+                <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                  <thead>
+                    <tr style={{ background: "#f3f4f6" }}>
+                      <th style={thtdStyle}>Name</th>
+                      <th style={thtdStyle}>Email</th>
+                      <th style={thtdStyle}>Phone</th>
+                      <th style={thtdStyle}>Class</th>
+                      <th style={thtdStyle}>Syllabus</th>
+                      <th style={thtdStyle}>Referral / Promoter Field</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {studentsForPromoter.map((s) => (
+                      <tr key={s.id} style={{ background: "white" }}>
+                        <td style={thtdStyle}>{s.name}</td>
+                        <td style={thtdStyle}>{s.email}</td>
+                        <td style={thtdStyle}>{s.phone || "-"}</td>
+                        <td style={thtdStyle}>{s.classGrade || "-"}</td>
+                        <td style={thtdStyle}>{s.syllabus || "-"}</td>
+                        <td style={thtdStyle}>
+                          {s.referralId || s.referral || s.promoterUid || s.promoterId || s.promoter || "-"}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
             </div>
           </div>
         </div>

@@ -1,7 +1,18 @@
 // src/pages/StudentDashboard.jsx
+/* eslint-disable */
 import React, { useEffect, useMemo, useState } from "react";
 import { db, auth } from "../firebase/firebaseConfig";
-import { doc, getDoc, collection, getDocs, query, where, addDoc } from "firebase/firestore";
+import {
+  doc,
+  getDoc,
+  collection,
+  getDocs,
+  query,
+  where,
+  addDoc,
+  serverTimestamp,
+} from "firebase/firestore";
+import { getFunctions, httpsCallable } from "firebase/functions";
 import { useNavigate } from "react-router-dom";
 import "./StudentDashboard.css";
 
@@ -48,6 +59,17 @@ function normalizeText(s) {
 }
 const isConceptPackageName = (name) => normalizeText(name) === "concept based package";
 
+/* -------------------------
+   Small helpers
+   ------------------------- */
+const safeNum = (v) => {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
+};
+
+/* -------------------------
+   Component
+   ------------------------- */
 const StudentDashboard = () => {
   const navigate = useNavigate();
   const [studentInfo, setStudentInfo] = useState({ name: "", classGrade: "", syllabus: "", mappedPromoter: "" });
@@ -64,7 +86,10 @@ const StudentDashboard = () => {
   const [studentReports, setStudentReports] = useState([]);
   const [loadingReports, setLoadingReports] = useState(false);
 
-  // Load Razorpay dynamically (Option B)
+  // Functions instance for callable
+  const functions = getFunctions();
+
+  // Load Razorpay dynamically
   useEffect(() => {
     const script = document.createElement("script");
     script.src = "https://checkout.razorpay.com/v1/checkout.js";
@@ -185,29 +210,19 @@ const StudentDashboard = () => {
     if (!cart.find((p) => p.id === pkg.id)) setCart((c) => [...c, pkg]);
   };
   const removeFromCart = (id) => setCart((c) => c.filter((p) => p.id !== id));
-  const cartTotal = useMemo(() => cart.reduce((sum, p) => sum + parseFloat(p.totalPayable || p.price || 0), 0), [cart]);
+  const cartTotal = useMemo(() => cart.reduce((sum, p) => sum + safeNum(p.totalPayable || p.price || 0), 0), [cart]);
 
   // Helper - compute displayed price safely
   const computeFinalPrice = (pkg) => {
-    const basePrice = parseFloat(pkg.price || pkg.totalPayable || 0) || 0;
-    const d1 = parseFloat(pkg.regularDiscount || 0) || 0;
-    const d2 = parseFloat(pkg.additionalDiscount || 0) || 0;
+    const basePrice = safeNum(pkg.price || pkg.totalPayable || 0);
+    const d1 = safeNum(pkg.regularDiscount || 0);
+    const d2 = safeNum(pkg.additionalDiscount || 0);
     const computedFinal = basePrice - (basePrice * d1) / 100 - (basePrice * d2) / 100;
     const finalPrice = Number.isFinite(parseFloat(pkg.totalPayable)) ? parseFloat(pkg.totalPayable) : computedFinal;
     return { basePrice, finalPrice, d1, d2 };
   };
 
-  // Save studentDatabase record helper (uses collection name 'studentDatabase' per your request)
-  const saveStudentDatabaseRecord = async (record) => {
-    try {
-      await addDoc(collection(db, "studentDatabase"), record);
-      // console.log("Saved studentDatabase record:", record);
-    } catch (err) {
-      console.error("Error saving studentDatabase record:", err);
-    }
-  };
-
-  // Fetch student's own reports from studentDatabase
+  // Fetch student's own payments from `payments` collection (updated)
   const fetchStudentReports = async () => {
     setLoadingReports(true);
     try {
@@ -217,13 +232,13 @@ const StudentDashboard = () => {
         setLoadingReports(false);
         return;
       }
-      const q = query(collection(db, "studentDatabase"), where("studentId", "==", uid));
+      const q = query(collection(db, "payments"), where("studentId", "==", uid));
       const snapshot = await getDocs(q);
       const list = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
-      // Sort by createdAt or paymentDate descending if available
+      // Sort by createdAt or paidAt descending if available
       list.sort((a, b) => {
-        const ta = a.createdAt ? new Date(a.createdAt).getTime() : a.paymentDate ? new Date(a.paymentDate).getTime() : 0;
-        const tb = b.createdAt ? new Date(b.createdAt).getTime() : b.paymentDate ? new Date(b.paymentDate).getTime() : 0;
+        const ta = a.paidAt ? new Date(a.paidAt).getTime() : a.createdAt ? new Date(a.createdAt).getTime() : 0;
+        const tb = b.paidAt ? new Date(b.paidAt).getTime() : b.createdAt ? new Date(b.createdAt).getTime() : 0;
         return tb - ta;
       });
       setStudentReports(list);
@@ -266,7 +281,38 @@ const StudentDashboard = () => {
     return { promoterUid: null, promoterUniqueId: null, promoterName: null };
   };
 
-  // Razorpay Checkout (creates richer payment docs)
+  // Helper: ask server to generate & send receipt (callable preferred, fallback to HTTP)
+  const sendReceiptToServer = async ({ paymentDocId, paymentPayload }) => {
+    try {
+      // Try callable first
+      try {
+        const sendReceiptFn = httpsCallable(functions, "sendPaymentReceipt");
+        const res = await sendReceiptFn({ paymentId: paymentDocId, payment: paymentPayload });
+        if (res && res.data && res.data.success) {
+          return { ok: true, via: "callable" };
+        }
+      } catch (err) {
+        // ignore, try HTTP fallback
+      }
+
+      const base = process.env.REACT_APP_FUNCTIONS_URL || "";
+      if (!base) {
+        return { ok: false, error: "FUNCTIONS_URL_NOT_CONFIGURED" };
+      }
+      const resp = await fetch(base + "/send-receipt", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ paymentId: paymentDocId, payment: paymentPayload }),
+      });
+      const json = await resp.json();
+      return { ok: resp.ok, data: json };
+    } catch (err) {
+      console.error("sendReceiptToServer error:", err);
+      return { ok: false, error: err?.message || String(err) };
+    }
+  };
+
+  // Razorpay Checkout (creates richer payment docs via callable)
   const handleCheckout = async () => {
     if (cart.length === 0) {
       alert("Cart is empty!");
@@ -283,76 +329,137 @@ const StudentDashboard = () => {
       image: "https://ispeducation.in/logo192.png",
       handler: async function (response) {
         try {
+          // Payment success from Razorpay
           alert("Payment successful! Payment ID: " + response.razorpay_payment_id);
-          const paymentsRef = collection(db, "payments");
 
           // resolve promoter info up-front (if any)
           const mappedPromoter = studentInfo.mappedPromoter || null;
           const promoterResolved = await resolvePromoterInfo(mappedPromoter);
 
-          // For each package in cart: save to payments AND studentDatabase
-          for (const pkg of cart) {
-            const commissionPercent = Number(pkg.commission || pkg.promoterCommission || 0);
-            const amount = Number(pkg.totalPayable || pkg.price || 0);
-
-            const paymentDoc = {
-              studentId: auth.currentUser.uid,
-              studentName: studentInfo.name || "",
-              packageId: pkg.id,
+          // Build packagesPayload (shape expected by Cloud Function)
+          // Use packageCost (rupees) and commission percent from pkg.commission (as you requested)
+          const packagesPayload = cart.map((pkg) => {
+            const pkgPrice = safeNum(pkg.totalPayable || pkg.price || pkg.packageCost || 0);
+            const commissionPercent = safeNum(pkg.commission ?? pkg.promoterCommission ?? pkg.commissionPercent ?? pkg.commissionPercent ?? 0);
+            return {
+              id: pkg.id,
               packageName: pkg.packageName || pkg.concept || "",
               subject: pkg.subject || "",
-              amount,
-              paymentId: response.razorpay_payment_id,
-              promoterUid: promoterResolved.promoterUid || null,
-              promoterUniqueId: promoterResolved.promoterUniqueId || null,
-              promoterName: promoterResolved.promoterName || null,
-              promoterId: studentInfo.mappedPromoter || null, // legacy field name preserved
-              paymentMethod: "razorpay",
-              status: "paid",
-              settlementStatus: "pending",
-              commissionPercent,
-              commissionPaid: false,
-              receiptUrl: null,
-              createdAt: new Date().toISOString(),
+              subtopic: pkg.subtopic || "",
+              chapter: pkg.chapter || "",
+              price: Number(pkgPrice), // the server expects price (in rupees)
+              commission: Number(commissionPercent), // percent number
+              studentName: studentInfo.name || "",
+              phone: studentInfo.phone || auth.currentUser?.phoneNumber || "",
             };
+          });
 
-            // Save to payments collection (existing)
-            await addDoc(paymentsRef, paymentDoc);
+          const commissionTotal = packagesPayload.reduce((s, p) => s + safeNum((p.price * p.commission) / 100), 0);
 
-            // Also save a student-facing record (studentDatabase) for easier admin + student view
-            const studentRecord = {
-              studentId: auth.currentUser.uid,
-              name: studentInfo.name || "",
-              email: auth.currentUser?.email || "",
-              packageId: pkg.id,
-              packageName: pkg.packageName || pkg.concept,
-              subject: pkg.subject || "",
-              amount,
-              paymentId: response.razorpay_payment_id,
-              promoterUid: promoterResolved.promoterUid || null,
-              promoterUniqueId: promoterResolved.promoterUniqueId || null,
-              promoterName: promoterResolved.promoterName || null,
-              promoterId: studentInfo.mappedPromoter || null, // legacy
-              promoterApproved: false, // admin can set this later
-              alsoPromoter: false,
-              paymentStatus: "Paid",
-              paymentDate: new Date().toISOString(),
-              createdAt: new Date().toISOString(),
-            };
+          // Build final payload (shape accepted by createPaymentRecord Cloud Function)
+          const callablePayload = {
+            paymentId: response.razorpay_payment_id,
+            packages: packagesPayload,
+            totalAmount: Number(cartTotal),
+            mappedPromoter: studentInfo.mappedPromoter || null, // pass uniqueId or uid if set on user doc
+          };
 
-            await saveStudentDatabaseRecord(studentRecord);
+          // Try callables (prefer server-side logic)
+          let saved = false;
+          let savedPaymentDocId = null;
+          let lastErr = null;
+
+          try {
+            const createPaymentRecord = httpsCallable(functions, "createPaymentRecord");
+            const res = await createPaymentRecord(callablePayload);
+            console.log("createPaymentRecord result:", res?.data);
+            if (res && res.data && res.data.success && Array.isArray(res.data.details)) {
+              saved = true;
+              // take first paymentDocId (if multiple packages were written, there will be one per package)
+              savedPaymentDocId = res.data.details[0]?.paymentDocId || null;
+            }
+          } catch (err) {
+            console.warn("createPaymentRecord callable failed:", err);
+            lastErr = err;
           }
 
-          // Clear cart
+          if (!saved) {
+            try {
+              const adminCreatePayment = httpsCallable(functions, "adminCreatePayment");
+              const res2 = await adminCreatePayment({ payment: callablePayload });
+              console.log("adminCreatePayment result:", res2?.data);
+              if (res2 && res2.data && res2.data.success && Array.isArray(res2.data.details)) {
+                saved = true;
+                savedPaymentDocId = res2.data.details[0]?.paymentDocId || null;
+              }
+            } catch (err2) {
+              console.warn("adminCreatePayment callable failed:", err2);
+              lastErr = err2;
+            }
+          }
+
+          // Fallback: client-side write to /payments (only if callables failed)
+          if (!saved) {
+            try {
+              // We will store one document that contains the full payload (packages array inside)
+              const pRef = await addDoc(collection(db, "payments"), {
+                studentId: auth.currentUser?.uid,
+                studentName: studentInfo.name || "",
+                email: auth.currentUser?.email || "",
+                phone: studentInfo.phone || "",
+                packages: packagesPayload,
+                amount: Number(cartTotal),
+                paymentId: response.razorpay_payment_id,
+                paymentMethod: "razorpay",
+                status: "paid",
+                settlementStatus: "pending",
+                promoterUid: promoterResolved?.promoterUid || null,
+                promoterUniqueId: promoterResolved?.promoterUniqueId || null,
+                promoterName: promoterResolved?.promoterName || null,
+                commissionTotal,
+                commissionPaid: false,
+                promoterPaid: false,
+                createdAt: serverTimestamp(),
+                paidAt: serverTimestamp(),
+                source: "razorpay_checkout_client_fallback",
+                gatewayRaw: { raw: response },
+              });
+              console.log("Fallback: saved payments doc client-side:", pRef.id);
+              saved = true;
+              savedPaymentDocId = pRef.id;
+            } catch (addErr) {
+              console.error("Fallback addDoc to /payments failed:", addErr);
+              lastErr = addErr;
+            }
+          }
+
+          if (!saved) {
+            console.error("Failed to save payment record via callable AND fallback. Last error:", lastErr);
+            alert(
+              "Payment succeeded but saving the record failed. Ensure your callable function (createPaymentRecord or adminCreatePayment) is deployed and that Firestore rules allow the write. Check console for details."
+            );
+            // clear cart locally (so user doesn't try paying twice)
+            setCart([]);
+            setActiveTab("reports");
+            if (activeTab === "reports") fetchStudentReports();
+            return;
+          }
+
+          // If saved, attempt to trigger receipt generation (server should email + whatsapp)
+          try {
+            const receiptRes = await sendReceiptToServer({ paymentDocId: savedPaymentDocId, paymentPayload: { ...callablePayload, savedPaymentDocId } });
+            console.log("sendReceiptToServer result:", receiptRes);
+          } catch (e) {
+            console.warn("Receipt sending attempt failed:", e);
+          }
+
+          // On success: clear cart and refresh reports (short delay for DB consistency)
           setCart([]);
-
-          // If user is viewing reports, refresh
-          if (activeTab === "reports") {
-            fetchStudentReports();
-          }
+          setActiveTab("reports");
+          setTimeout(() => fetchStudentReports(), 800);
         } catch (err) {
-          console.error("Error saving payment:", err);
-          alert("Payment succeeded but saving record failed. Check console.");
+          console.error("Error in payment handler:", err);
+          alert("Payment succeeded but something went wrong while saving. Check console.");
         }
       },
       prefill: {
@@ -361,7 +468,7 @@ const StudentDashboard = () => {
         contact: "",
       },
       notes: {
-        cart: JSON.stringify(cart.map((c) => ({ id: c.id, name: c.packageName || c.concept }))),
+        cart: JSON.stringify(cart.map((c) => ({ id: c.id, name: c.packageName || c.concept })) || []),
       },
       theme: { color: "#1e90ff" },
     };
@@ -516,13 +623,13 @@ const StudentDashboard = () => {
                   <tbody>
                     {studentReports.map((r) => (
                       <tr key={r.id} style={{ borderBottom: "1px solid rgba(255,255,255,0.04)" }}>
-                        <td style={{ padding: "10px 6px", color: "#e6eef8" }}>{r.packageName || r.package || "—"}</td>
-                        <td style={{ padding: "10px 6px", color: "#e6eef8" }}>{r.subject || "—"}</td>
-                        <td style={{ padding: "10px 6px", color: "#e6eef8", fontWeight: 700 }}>{Number(r.amount || 0).toFixed(2)}</td>
-                        <td style={{ padding: "10px 6px", color: "#e6eef8" }}>{r.paymentDate ? new Date(r.paymentDate).toLocaleString("en-IN") : r.createdAt ? new Date(r.createdAt).toLocaleString("en-IN") : "—"}</td>
-                        <td style={{ padding: "10px 6px", color: r.paymentStatus === "Paid" ? "#bbf7d0" : "#fda4af", fontWeight: 700 }}>{r.paymentStatus || "—"}</td>
-                        <td style={{ padding: "10px 6px", color: "#e6eef8" }}>{r.promoterApproved ? "✅" : "❌"}</td>
-                        <td style={{ padding: "10px 6px", color: "#e6eef8", fontSize: 12 }}>{r.paymentId || r.paymentID || "—"}</td>
+                        <td style={{ padding: "10px 6px", color: "#e6eef8" }}>{r.packages && r.packages.length ? r.packages.map(p => p.packageName).join(", ") : r.packageName || "—"}</td>
+                        <td style={{ padding: "10px 6px", color: "#e6eef8" }}>{r.subject || (r.packages && r.packages[0]?.subject) || "—"}</td>
+                        <td style={{ padding: "10px 6px", color: "#e6eef8", fontWeight: 700 }}>{Number(r.amount || r.totalPackageCost || 0).toFixed(2)}</td>
+                        <td style={{ padding: "10px 6px", color: "#e6eef8" }}>{r.paidAt ? (r.paidAt.seconds ? new Date(r.paidAt.seconds * 1000).toLocaleString("en-IN") : new Date(r.paidAt).toLocaleString("en-IN")) : r.createdAtClient ? new Date(r.createdAtClient).toLocaleString("en-IN") : "—"}</td>
+                        <td style={{ padding: "10px 6px", color: r.settlementStatus === "settled" ? "#bbf7d0" : "#fda4af", fontWeight: 700 }}>{r.settlementStatus || r.paymentStatus || "—"}</td>
+                        <td style={{ padding: "10px 6px", color: "#e6eef8" }}>{r.promoterApproved ? "✅" : (r.promoterUid || r.promoterUniqueId ? "❌" : "—")}</td>
+                        <td style={{ padding: "10px 6px", color: "#e6eef8", fontSize: 12 }}>{r.paymentId || r.paymentID || r.id || "—"}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -1032,101 +1139,27 @@ const StudentDashboard = () => {
       {/* Mobile Styles in JS to ensure immediate effect without touching CSS file */}
       <style>
         {`
-          /* Make sure main flex stacks on mobile and cart becomes full width below packages */
+          /* responsive rules (unchanged) */
           @media (max-width: 900px) {
             .student-dashboard {
               flex-direction: column;
-              padding-bottom: 260px; /* ensure space for bottom action bar and sticky buttons */
+              padding-bottom: 260px;
             }
-
-            .student-dashboard > div:nth-child(2) {
-              width: 100%;
-              position: relative;
-              top: auto;
-              margin-top: 18px;
-            }
-
-            /* Cart sidebar becomes full width after main content on mobile */
-            .student-dashboard > div:nth-child(3) {
-              width: 100%;
-              position: relative !important;
-              top: auto !important;
-              margin-top: 18px;
-              align-self: stretch;
-            }
-
-            .packages-grid {
-              grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
-            }
-
-            .zoom-card > .zoom-card-inner {
-              padding-top: 18px; /* ensure badge doesn't overlap content on small */
-            }
-
-            .zoom-card img {
-              width: 70px !important;
-              height: 70px !important;
-            }
-
-            /* Adjust sticker and add-to-cart positions on small screens so they don't cover content */
-            .zoom-card {
-              padding-bottom: 100px; /* provide extra space inside card for fixed elements */
-            }
-
-            /* price sticker tweaks for small screens: move up and scale down so it doesn't block content */
-            .price-sticker {
-              position: absolute !important;
-              top: 10px !important;
-              left: 10px !important;
-              bottom: auto !important;
-              transform: none !important;
-              padding: 6px 8px !important;
-              font-size: 11px !important;
-              min-width: 96px !important;
-              z-index: 6 !important;
-              opacity: 0.98;
-            }
-
-            /* ensure Add to Cart button is always visible above sticker */
-            .zoom-card button {
-              z-index: 999 !important;
-            }
+            .student-dashboard > div:nth-child(2) { width: 100%; position: relative; top: auto; margin-top: 18px; }
+            .student-dashboard > div:nth-child(3) { width: 100%; position: relative !important; top: auto !important; margin-top: 18px; align-self: stretch; }
+            .packages-grid { grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); }
+            .zoom-card > .zoom-card-inner { padding-top: 18px; }
+            .zoom-card img { width: 70px !important; height: 70px !important; }
+            .zoom-card { padding-bottom: 100px; }
+            .price-sticker { position: absolute !important; top: 10px !important; left: 10px !important; bottom: auto !important; transform: none !important; padding: 6px 8px !important; font-size: 11px !important; min-width: 96px !important; z-index: 6 !important; opacity: 0.98; }
+            .zoom-card button { z-index: 999 !important; }
           }
-
-          /* Ensure bottom fixed actions don't block content touch events and appear above everything */
-          .bottom-fixed-actions {
-            background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(0,0,0,0.2));
-            backdrop-filter: blur(6px);
-            padding: 8px;
-          }
-
-          /* Slight responsive tweak for cards on very small devices */
           @media (max-width: 420px) {
-            .packages-grid {
-              grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-            }
-
-            .zoom-card img {
-              width: 60px !important;
-              height: 60px !important;
-            }
-
-            .price-sticker {
-              left: 8px !important;
-              top: 8px !important;
-              padding: 5px 6px !important;
-              font-size: 10px !important;
-              min-width: 84px !important;
-            }
-
-            .zoom-card {
-              padding-bottom: 120px;
-            }
-
-            /* make sticker and button slightly smaller on very small screens */
-            .zoom-card div[aria-hidden] {
-              transform: scale(0.92);
-            }
+            .packages-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+            .zoom-card img { width: 60px !important; height: 60px !important; }
+            .price-sticker { left: 8px !important; top: 8px !important; padding: 5px 6px !important; font-size: 10px !important; min-width: 84px !important; }
+            .zoom-card { padding-bottom: 120px; }
+            .zoom-card div[aria-hidden] { transform: scale(0.92); }
           }
         `}
       </style>

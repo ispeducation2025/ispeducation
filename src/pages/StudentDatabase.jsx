@@ -5,11 +5,10 @@ import { collection, getDocs } from "firebase/firestore";
 import { useNavigate } from "react-router-dom";
 
 /**
- * StudentDatabase.jsx (Aligned Version)
- * - Hooks always in same order
- * - Clean UI
- * - Filters, search, CSV export
- * - Payment status calculation
+ * StudentDatabase.jsx (Updated - ESLint fixes)
+ * - Loads users + payments + packages
+ * - Uses referralId/referralCode/promoterId as promoter identifier
+ * - Shows purchase details or "No purchase"
  */
 
 export default function StudentDatabase() {
@@ -60,30 +59,111 @@ export default function StudentDatabase() {
     setEndDate("");
   };
 
-  // Fetch DB
+  // Fetch DB: users, payments, packages
   useEffect(() => {
     let mounted = true;
 
-    const fetchStudents = async () => {
+    const fetchAll = async () => {
       setLoading(true);
       try {
-        const snap = await getDocs(collection(db, "users"));
-        const arr = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-        if (mounted) setStudentsRaw(arr);
+        const [usersSnap, paymentsSnap, packagesSnap] = await Promise.all([
+          getDocs(collection(db, "users")),
+          getDocs(collection(db, "payments")),
+          getDocs(collection(db, "packages")),
+        ]);
+
+        const users = usersSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
+        const payments = paymentsSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
+        const packages = packagesSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
+
+        if (!mounted) return;
+
+        // Build a payments map by possible user identifier fields
+        const paymentsByUser = {};
+        payments.forEach((p) => {
+          const uid = p.userId || p.uid || p.studentId || p.customerId || p.payerId;
+          if (!uid) return;
+          if (!paymentsByUser[uid]) paymentsByUser[uid] = [];
+          paymentsByUser[uid].push(p);
+        });
+
+        // Build package map for lookups
+        const packageMap = {};
+        packages.forEach((pkg) => {
+          if (pkg.id) packageMap[pkg.id] = pkg;
+          if (pkg.packageId) packageMap[pkg.packageId] = pkg;
+          if (pkg.name && pkg.name !== pkg.id) packageMap[pkg.name] = pkg;
+        });
+
+        const mergedUsers = users.map((u) => {
+          // promoter id might be stored under different fields in your DB
+          const promoterId = u.promoterId || u.referralId || u.referralCode || u.referral || null;
+
+          // payments attached by uid (allow reassignment for fallback)
+          let userPayments = paymentsByUser[u.uid || u.id || u.uniqueId || u.userId] || [];
+
+          // If there are no payments directly matched, also try matching by email/phone (best-effort)
+          if (!userPayments.length) {
+            const fallback = payments.filter(
+              (p) =>
+                (p.email && u.email && p.email.toLowerCase() === (u.email || "").toLowerCase()) ||
+                (p.phone && u.phone && String(p.phone) === String(u.phone))
+            );
+            if (fallback.length) {
+              userPayments = fallback;
+            }
+          }
+
+          // compute paid sum and last payment
+          const paymentsSorted = [...userPayments].sort((a, b) => {
+            const ta = a.createdAt && a.createdAt.toDate ? a.createdAt.toDate().getTime() : new Date(a.createdAt || 0).getTime();
+            const tb = b.createdAt && b.createdAt.toDate ? b.createdAt.toDate().getTime() : new Date(b.createdAt || 0).getTime();
+            return tb - ta;
+          });
+
+          const paidSum = paymentsSorted.reduce((acc, p) => acc + Number(p.amount || 0), 0);
+          const lastPayment = paymentsSorted[0] || null;
+
+          // resolve packageName if user doesn't have it but payment has packageId
+          let packageName = u.packageName || "";
+          if (!packageName) {
+            if (lastPayment && lastPayment.packageId) {
+              const pkg = packageMap[lastPayment.packageId];
+              packageName = pkg ? pkg.name || pkg.title || "" : "";
+            } else if (u.packageId) {
+              const pkg = packageMap[u.packageId];
+              packageName = pkg ? pkg.name || "" : "";
+            }
+          }
+
+          return {
+            ...u,
+            promoterId,
+            _payments: paymentsSorted,
+            _paidSum: paidSum,
+            _lastPayment: lastPayment,
+            packageName: packageName || u.packageName || "",
+          };
+        });
+
+        setStudentsRaw(mergedUsers);
       } catch (err) {
         console.error("Fetch error:", err);
-        if (mounted) setStudentsRaw([]);
+        if (mounted) {
+          setStudentsRaw([]);
+        }
       } finally {
         if (mounted) setLoading(false);
       }
     };
 
-    fetchStudents();
+    fetchAll();
     return () => (mounted = false);
   }, []);
 
   const parseTS = (ts) => {
     if (!ts) return null;
+    // Firestore Timestamp object
     if (ts.toDate) return ts.toDate();
     const d = new Date(ts);
     return isNaN(d.getTime()) ? null : d;
@@ -113,7 +193,10 @@ export default function StudentDatabase() {
 
   const promoterIdOptions = useMemo(() => {
     const s = new Set();
-    studentsRaw.forEach((u) => u.promoterId && s.add(u.promoterId));
+    studentsRaw.forEach((u) => {
+      const pid = u.promoterId || u.referralId || u.referralCode || u.referral;
+      if (pid) s.add(pid);
+    });
     return [...s].sort();
   }, [studentsRaw]);
 
@@ -131,13 +214,19 @@ export default function StudentDatabase() {
       arr = arr.filter((u) => {
         const actual = Number(u.actualCost || 0);
         const disc = Number(u.discount || 0);
-        const paid = Number(u.paidAmount || 0);
-        const st = paid >= actual - disc ? "Paid in Full" : "Pending";
+        // Try to use paidAmount on user, else _paidSum from payments
+        const paid = Number(u.paidAmount || u._paidSum || 0);
+        const st = paid >= actual - disc && actual > 0 ? "Paid in Full" : "Pending";
         return st === filterPaymentStatus;
       });
     }
 
-    if (filterPromoterId) arr = arr.filter((u) => u.promoterId === filterPromoterId);
+    if (filterPromoterId) {
+      arr = arr.filter((u) => {
+        const pid = u.promoterId || u.referralId || u.referralCode || u.referral || "";
+        return pid === filterPromoterId;
+      });
+    }
 
     if (searchText.trim()) {
       const t = searchText.toLowerCase();
@@ -163,10 +252,10 @@ export default function StudentDatabase() {
       });
     }
 
-    // Sort
+    // Sort by createdAt desc
     arr.sort((a, b) => {
-      const da = parseTS(a.createdAt) || 0;
-      const db = parseTS(b.createdAt) || 0;
+      const da = parseTS(a.createdAt) ? parseTS(a.createdAt).getTime() : 0;
+      const db = parseTS(b.createdAt) ? parseTS(b.createdAt).getTime() : 0;
       return db - da;
     });
 
@@ -194,9 +283,8 @@ export default function StudentDatabase() {
     const rows = filteredStudents.map((u) => {
       const actual = Number(u.actualCost || 0);
       const disc = Number(u.discount || 0);
-      const paid = Number(u.paidAmount || 0);
-      const status = paid >= actual - disc ? "Paid in Full" : "Pending";
-      const created = parseTS(u.createdAt);
+      const paid = Number(u.paidAmount || u._paidSum || 0);
+      const status = paid >= actual - disc && actual > 0 ? "Paid in Full" : "Pending";
 
       return {
         id: u.id,
@@ -210,11 +298,11 @@ export default function StudentDatabase() {
         discount: disc,
         paidAmount: paid,
         paymentStatus: status,
-        paymentMode: u.paymentMode || "",
-        transactionId: u.transactionId || "",
-        promoterId: u.promoterId || "",
-        referralCode: u.referralCode || "",
-        createdAt: created ? created.toISOString() : "",
+        paymentMode: u._lastPayment ? u._lastPayment.mode || u.paymentMode || "" : u.paymentMode || "",
+        transactionId: u._lastPayment ? u._lastPayment.transactionId || u._lastPayment.txnId || "" : (u.transactionId || ""),
+        promoterId: u.promoterId || u.referralId || u.referralCode || "",
+        referralCode: u.referralCode || u.referralId || "",
+        createdAt: parseTS(u.createdAt) ? parseTS(u.createdAt).toISOString() : "",
       };
     });
 
@@ -224,7 +312,7 @@ export default function StudentDatabase() {
       "\n" +
       rows
         .map((r) =>
-          headers.map((h) => `"${String(r[h]).replace(/"/g, '""')}"`).join(",")
+          headers.map((h) => `"${String(r[h] ?? "").replace(/"/g, '""')}"`).join(",")
         )
         .join("\n");
 
@@ -503,9 +591,41 @@ export default function StudentDatabase() {
                 filteredStudents.map((s, i) => {
                   const actual = Number(s.actualCost || 0);
                   const disc = Number(s.discount || 0);
-                  const paid = Number(s.paidAmount || 0);
-                  const status = paid >= actual - disc ? "Paid in Full" : "Pending";
-                  const created = parseTS(s.createdAt);
+                  // Try user.paidAmount else sum of payments
+                  const paid = Number(s.paidAmount || s._paidSum || 0);
+                  const status = paid >= actual - disc && actual > 0 ? "Paid in Full" : "Pending";
+
+                  const promoterDisplay = s.promoterId || s.referralId || s.referralCode || "-";
+
+                  // Purchase display: use last payment (if any) or "No purchase"
+                  const lastPayment = s._lastPayment;
+                  let purchaseDisplay = "No purchase";
+                  if (lastPayment) {
+                    const pDate = parseTS(lastPayment.createdAt) || parseTS(lastPayment.timestamp) || null;
+                    purchaseDisplay = (
+                      <div>
+                        <div style={{ fontWeight: 700 }}>
+                          {formatCurrency(Number(lastPayment.amount || 0))}
+                        </div>
+                        <div style={{ fontSize: 12 }}>
+                          {lastPayment.mode || lastPayment.paymentMode || ""}
+                          {" • "}
+                          {lastPayment.transactionId || lastPayment.txnId || ""}
+                        </div>
+                        <div style={{ fontSize: 12, color: "#666" }}>
+                          {pDate ? pDate.toLocaleString() : ""}
+                        </div>
+                      </div>
+                    );
+                  } else if (s.paymentMode || s.transactionId) {
+                    // fallback: user document has some payment fields
+                    purchaseDisplay = (
+                      <div>
+                        <div style={{ fontWeight: 700 }}>{formatCurrency(Number(s.paidAmount || 0))}</div>
+                        <div style={{ fontSize: 12 }}>{s.paymentMode || ""} • {s.transactionId || ""}</div>
+                      </div>
+                    );
+                  }
 
                   return (
                     <tr
@@ -558,11 +678,15 @@ export default function StudentDatabase() {
                       </td>
 
                       <td style={tdStyle}>
-                        {created ? created.toLocaleString() : "-"}
+                        {typeof purchaseDisplay === "string" ? (
+                          <div style={{ fontWeight: 700, color: "#777" }}>{purchaseDisplay}</div>
+                        ) : (
+                          purchaseDisplay
+                        )}
                       </td>
 
-                      <td style={tdStyle}>{s.promoterId || "-"}</td>
-                      <td style={tdStyle}>{s.referralCode || "-"}</td>
+                      <td style={tdStyle}>{promoterDisplay}</td>
+                      <td style={tdStyle}>{s.referralCode || s.referralId || "-"}</td>
 
                       <td style={{ ...tdStyle }}>
                         <button style={btnGhost} onClick={() => copyUid(s.id)}>
