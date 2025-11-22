@@ -449,17 +449,17 @@ exports.confirmPayout = functions
 
 /* ----------------------
    createPaymentRecord (callable) - secure server-side payment recording
-   - Writes /payments (one doc per top-level payment containing packages array OR one doc per package)
+   - Writes /payments (one doc per top-level payment containing packages array OR optionally one doc per package)
    - Writes /studentDatabase entries
    - Atomically updates promoter's pendingAmount in users/{promoterDocId}
    - Returns created doc ids
    ---------------------- */
 exports.createPaymentRecord = functions
-  .runWith({ secrets: ["RAZORPAY_KEY_ID", "RAZORPAY_KEY_SECRET"], memory: "256MB", timeoutSeconds: 60 })
+  .runWith({ secrets: ["RAZORPAY_KEY_ID", "RAZORPAY_KEY_SECRET"], memory: "256MB", timeoutSeconds: 90 })
   .https.onCall(async (data, context) => {
     if (!context || !context.auth) throw new functions.https.HttpsError("unauthenticated", "Authentication required.");
     const callerUid = context.auth.uid;
-    const { paymentId, packages, totalAmount, mappedPromoter = null } = data || {};
+    const { paymentId, packages, totalAmount, mappedPromoter = null, createPerPackage = false } = data || {};
 
     if (!paymentId || !Array.isArray(packages) || packages.length === 0) {
       throw new functions.https.HttpsError("invalid-argument", "paymentId and non-empty packages array required.");
@@ -471,12 +471,11 @@ exports.createPaymentRecord = functions
     const usersCol = db.collection("users");
 
     try {
-      // Try to verify payment with Razorpay (best-effort)
+      // (Optional) server-side verify with Razorpay
       let rp = null;
       try {
         rp = await verifyRazorpayPayment(paymentId, totalAmount);
       } catch (e) {
-        // verification failure is logged but not fatal here (some setups may not require server verify)
         console.warn("Razorpay verify warning:", e.message || e);
       }
 
@@ -485,7 +484,6 @@ exports.createPaymentRecord = functions
       let promoterData = null;
       if (mappedPromoter) {
         try {
-          // treat value of length ~28 as doc id (uid)
           if (typeof mappedPromoter === "string" && mappedPromoter.length >= 20 && mappedPromoter.length <= 36) {
             const snap = await usersCol.doc(mappedPromoter).get();
             if (snap.exists) {
@@ -497,7 +495,6 @@ exports.createPaymentRecord = functions
           // ignore
         }
         if (!promoterDocId) {
-          // try lookup by uniqueId
           try {
             const q = await usersCol.where("uniqueId", "==", mappedPromoter).limit(1).get();
             if (!q.empty) {
@@ -510,49 +507,59 @@ exports.createPaymentRecord = functions
         }
       }
 
-      // Build per-package payment documents, compute commission amounts and total commission
+      // DEBUG: log incoming payload to help debug packages / commission parsing
+      console.log("createPaymentRecord payload:", {
+        callerUid,
+        paymentId,
+        totalAmount,
+        mappedPromoter,
+        promoterDocId,
+        packagesSummary: packages.map((p) => ({
+          id: p.id,
+          packageId: p.packageId,
+          packageName: p.packageName || p.package || p.name,
+          price: p.packageCost ?? p.price ?? p.totalPayable,
+          commission: p.commission ?? p.promoterCommission ?? p.commissionPercent ?? null,
+          commissionAmount: p.commissionAmount ?? null,
+        })),
+        createPerPackage: !!createPerPackage,
+      });
+
       const createdPaymentDocIds = [];
       let commissionTotal = 0;
       const nowIso = new Date().toISOString();
 
-      // Use a transaction to create payments + studentDatabase entries + update promoter pending atomically
+      // Transaction: READ promoter doc first (if exists), then perform writes
       await db.runTransaction(async (tx) => {
-        // get promoter doc ref if exists
         const promoterRef = promoterDocId ? usersCol.doc(promoterDocId) : null;
 
-        // For atomic increment, track total commission to add
+        // READ promoter (if present) before any writes
+        let promoterExistingData = null;
+        let currentPending = 0;
+        if (promoterRef) {
+          const pSnap = await tx.get(promoterRef);
+          if (pSnap.exists) {
+            promoterExistingData = pSnap.data() || {};
+            currentPending = Number(promoterExistingData.pendingAmount || 0) || 0;
+          } else {
+            promoterExistingData = null;
+            currentPending = 0;
+          }
+        }
+
+        // compute per-package commission details first (no writes)
+        const computedPackages = [];
         let transCommissionTotal = 0;
-
-        // One top-level payments doc (single doc containing packages array) is simpler for later queries.
-        // We'll create a single /payments doc that contains the packages array plus per-package commission detail.
-        const paymentDoc = {
-          studentId: callerUid,
-          studentName: context.auth.token ? (context.auth.token.name || null) : null,
-          email: context.auth.token ? (context.auth.token.email || null) : null,
-          phone: null,
-          packages: [],
-          paymentId,
-          paymentMethod: "razorpay",
-          status: "paid",
-          settlementStatus: "pending",
-          promoterDocId: promoterDocId || null,
-          promoterResolved: promoterData || null,
-          commissionTotal: 0,
-          commissionPaid: false,
-          promoterPaid: false,
-          paymentDate: nowIso,
-          createdAt: nowIso,
-          rawRazorpay: rp || null,
-        };
-
-        // Build packages array
         for (const pkg of packages) {
-          const pkgPrice = Number(pkg.packageCost ?? pkg.packageCost ?? pkg.price ?? pkg.totalPayable ?? 0) || 0;
-          // commission percent precedence: pkg.commission -> pkg.promoterCommission -> pkg.commissionPercent -> 0
+          const pkgPrice = Number(pkg.packageCost ?? pkg.price ?? pkg.totalPayable ?? 0) || 0;
           const commissionPercent = Number(pkg.commission ?? pkg.promoterCommission ?? pkg.commissionPercent ?? 0) || 0;
-          const commissionAmount = Number(((pkg.commissionAmount ?? (pkgPrice * commissionPercent) / 100) || 0).toFixed(2));
+          const commissionAmountRaw =
+            pkg.commissionAmount !== undefined && pkg.commissionAmount !== null
+              ? Number(pkg.commissionAmount)
+              : (pkgPrice * commissionPercent) / 100;
+          const commissionAmount = Number((Number(commissionAmountRaw) || 0).toFixed(2));
 
-          paymentDoc.packages.push({
+          const computed = {
             id: pkg.id || null,
             packageId: pkg.packageId || pkg.id || null,
             packageName: pkg.packageName || pkg.concept || pkg.name || null,
@@ -563,69 +570,131 @@ exports.createPaymentRecord = functions
             commissionPercent,
             commissionAmount,
             meta: pkg.meta || null,
-          });
-
+          };
+          computedPackages.push(computed);
           transCommissionTotal += commissionAmount;
         }
 
-        paymentDoc.commissionTotal = Number(transCommissionTotal.toFixed(2));
-        commissionTotal = paymentDoc.commissionTotal;
+        // Option A: create separate payment doc per package
+        if (createPerPackage) {
+          for (const cPkg of computedPackages) {
+            const singlePaymentDoc = {
+              studentId: callerUid,
+              studentName: context.auth.token ? (context.auth.token.name || null) : null,
+              email: context.auth.token ? (context.auth.token.email || null) : null,
+              phone: null,
+              packages: [cPkg],
+              paymentId,
+              paymentMethod: "razorpay",
+              status: "paid",
+              settlementStatus: "pending",
+              promoterDocId: promoterDocId || null,
+              promoterResolved: promoterData || promoterExistingData || null,
+              commissionTotal: Number(cPkg.commissionAmount || 0),
+              commissionPaid: false,
+              promoterPaid: false,
+              paymentDate: nowIso,
+              createdAt: nowIso,
+              rawRazorpay: rp || null,
+            };
 
-        // add payment doc to payments collection (server writes)
-        const newPaymentRef = paymentsCol.doc(); // create new doc ref
-        tx.set(newPaymentRef, {
-          ...paymentDoc,
-          createdAt: admin.firestore.FieldValue.serverTimestamp(),
-          paidAt: admin.firestore.FieldValue.serverTimestamp(),
-        });
-        createdPaymentDocIds.push(newPaymentRef.id);
-
-        // create studentDatabase record(s) — create single consolidated studentDatabase entry referencing payment doc
-        const studentRecordRef = studentDbCol.doc();
-        tx.set(studentRecordRef, {
-          studentId: callerUid,
-          name: paymentDoc.studentName || null,
-          email: paymentDoc.email || null,
-          phone: paymentDoc.phone || null,
-          packages: paymentDoc.packages,
-          totalPackageCost: Number(totalAmount || paymentDoc.packages.reduce((s, x) => s + (Number(x.packageCost || 0)), 0).toFixed(2)),
-          amount: Number(totalAmount || paymentDoc.packages.reduce((s, x) => s + (Number(x.packageCost || 0)), 0).toFixed(2)),
-          paymentId,
-          paymentStatus: "Paid",
-          paymentDate: nowIso,
-          promoterDocId: promoterDocId || null,
-          promoterApproved: false,
-          createdAt: admin.firestore.FieldValue.serverTimestamp(),
-          paymentsRefId: newPaymentRef.id,
-        });
-        createdPaymentDocIds.push(studentRecordRef.id);
-
-        // If promoter exists: increment promoter.pendingAmount by transCommissionTotal & update lastPayment and lastPaidAmount
-        if (promoterRef && transCommissionTotal > 0) {
-          const pSnap = await tx.get(promoterRef);
-          if (!pSnap.exists) {
-            // If promoter doc unexpectedly missing, still proceed without updating promoter
-            console.warn("Promoter doc not found for id", promoterDocId);
-          } else {
-            const pData = pSnap.data() || {};
-            const currentPending = Number(pData.pendingAmount || 0) || 0;
-            const newPending = Number((currentPending + transCommissionTotal).toFixed(2));
-            tx.update(promoterRef, {
-              pendingAmount: newPending,
-              lastPayment: nowIso,
-              lastPaidAmount: admin.firestore.FieldValue.increment(0), // keep prior last paid until manual payout
-              lastCommissionAdded: admin.firestore.FieldValue.serverTimestamp(),
-              // optionally track lastPaymentDoc or lastPaymentId
-              lastPaymentDoc: newPaymentRef.id,
-              lastCommissionValue: transCommissionTotal,
+            const newRef = paymentsCol.doc();
+            tx.set(newRef, {
+              ...singlePaymentDoc,
+              createdAt: admin.firestore.FieldValue.serverTimestamp(),
+              paidAt: admin.firestore.FieldValue.serverTimestamp(),
             });
+            createdPaymentDocIds.push(newRef.id);
           }
+
+          // create a single studentDatabase entry referencing the group of payments
+          const studentRecordRef = studentDbCol.doc();
+          tx.set(studentRecordRef, {
+            studentId: callerUid,
+            name: context.auth.token ? (context.auth.token.name || null) : null,
+            email: context.auth.token ? (context.auth.token.email || null) : null,
+            phone: null,
+            packages: computedPackages,
+            totalPackageCost: Number(totalAmount || computedPackages.reduce((s, x) => s + (Number(x.packageCost || 0)), 0).toFixed(2)),
+            amount: Number(totalAmount || computedPackages.reduce((s, x) => s + (Number(x.packageCost || 0)), 0).toFixed(2)),
+            paymentId,
+            paymentStatus: "Paid",
+            paymentDate: nowIso,
+            promoterDocId: promoterDocId || null,
+            promoterApproved: false,
+            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+            paymentsRefIds: createdPaymentDocIds,
+          });
+          createdPaymentDocIds.push(studentRecordRef.id);
+        } else {
+          // Option B: create one top-level payment doc containing all packages
+          const paymentDoc = {
+            studentId: callerUid,
+            studentName: context.auth.token ? (context.auth.token.name || null) : null,
+            email: context.auth.token ? (context.auth.token.email || null) : null,
+            phone: null,
+            packages: computedPackages,
+            paymentId,
+            paymentMethod: "razorpay",
+            status: "paid",
+            settlementStatus: "pending",
+            promoterDocId: promoterDocId || null,
+            promoterResolved: promoterData || promoterExistingData || null,
+            commissionTotal: Number(transCommissionTotal.toFixed(2)),
+            commissionPaid: false,
+            promoterPaid: false,
+            paymentDate: nowIso,
+            createdAt: nowIso,
+            rawRazorpay: rp || null,
+          };
+
+          const newPaymentRef = paymentsCol.doc();
+          tx.set(newPaymentRef, {
+            ...paymentDoc,
+            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+            paidAt: admin.firestore.FieldValue.serverTimestamp(),
+          });
+          createdPaymentDocIds.push(newPaymentRef.id);
+
+          // studentDatabase record
+          const studentRecordRef = studentDbCol.doc();
+          tx.set(studentRecordRef, {
+            studentId: callerUid,
+            name: paymentDoc.studentName || null,
+            email: paymentDoc.email || null,
+            phone: paymentDoc.phone || null,
+            packages: paymentDoc.packages,
+            totalPackageCost: Number(totalAmount || paymentDoc.packages.reduce((s, x) => s + (Number(x.packageCost || 0)), 0).toFixed(2)),
+            amount: Number(totalAmount || paymentDoc.packages.reduce((s, x) => s + (Number(x.packageCost || 0)), 0).toFixed(2)),
+            paymentId,
+            paymentStatus: "Paid",
+            paymentDate: nowIso,
+            promoterDocId: promoterDocId || null,
+            promoterApproved: false,
+            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+            paymentsRefId: newPaymentRef.id,
+          });
+          createdPaymentDocIds.push(studentRecordRef.id);
         }
-        // transaction complete
+
+        // Update promoter pendingAmount atomically (if promoter exists)
+        if (promoterRef && transCommissionTotal > 0 && promoterExistingData !== null) {
+          const newPending = Number((currentPending + transCommissionTotal).toFixed(2));
+          tx.update(promoterRef, {
+            pendingAmount: newPending,
+            lastPayment: nowIso,
+            lastPaidAmount: admin.firestore.FieldValue.increment(0),
+            lastCommissionAdded: admin.firestore.FieldValue.serverTimestamp(),
+            lastPaymentDoc: createdPaymentDocIds.length ? createdPaymentDocIds[0] : null,
+            lastCommissionValue: transCommissionTotal,
+          });
+        }
+
+        // finalize commissionTotal for return
+        commissionTotal = Number(transCommissionTotal.toFixed(2));
         return;
       }); // end transaction
 
-      // success
       return { success: true, paymentDocIds: createdPaymentDocIds, commissionTotal };
     } catch (err) {
       console.error("createPaymentRecord error:", err);
@@ -700,7 +769,7 @@ exports.onPaymentCreated = functions
       // Send emails via SendGrid
       const mailClient = getSgMail();
       if (studentEmail && mailClient) {
-        // welcome (optional)
+        // purchase email
         const purchaseHtml = `
           <p>Hi ${studentName},</p>
           <p>Thanks for purchasing <strong>${packageNames}</strong> for <strong>₹${amount.toFixed(2)}</strong>.</p>
