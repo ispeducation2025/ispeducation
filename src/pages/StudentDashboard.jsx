@@ -1,4 +1,3 @@
-// src/pages/StudentDashboard.jsx
 /* eslint-disable */
 import React, { useEffect, useMemo, useState } from "react";
 import { db, auth } from "../firebase/firebaseConfig";
@@ -68,6 +67,25 @@ const safeNum = (v) => {
 };
 
 /* -------------------------
+   Get Functions instance (try default then region fallback)
+   ------------------------- */
+function getFunctionsInstance() {
+  try {
+    return getFunctions();
+  } catch (e) {
+    console.warn("getFunctions() failed, trying asia-south1 fallback...", e?.message || e);
+  }
+  try {
+    // common region for India deployments; change if your functions are in another region
+    return getFunctions(undefined, "asia-south1");
+  } catch (e) {
+    console.warn("getFunctions(region) also failed:", e?.message || e);
+    // final fallback - still try default
+    return getFunctions();
+  }
+}
+
+/* -------------------------
    Component
    ------------------------- */
 const StudentDashboard = () => {
@@ -87,7 +105,7 @@ const StudentDashboard = () => {
   const [loadingReports, setLoadingReports] = useState(false);
 
   // Functions instance for callable
-  const functions = getFunctions();
+  const functions = useMemo(() => getFunctionsInstance(), []);
 
   // Load Razorpay dynamically
   useEffect(() => {
@@ -237,8 +255,8 @@ const StudentDashboard = () => {
       const list = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
       // Sort by createdAt or paidAt descending if available
       list.sort((a, b) => {
-        const ta = a.paidAt ? new Date(a.paidAt).getTime() : a.createdAt ? new Date(a.createdAt).getTime() : 0;
-        const tb = b.paidAt ? new Date(b.paidAt).getTime() : b.createdAt ? new Date(b.createdAt).getTime() : 0;
+        const ta = a.paidAt ? (a.paidAt.seconds ? a.paidAt.seconds * 1000 : new Date(a.paidAt).getTime()) : a.createdAt ? (a.createdAt.seconds ? a.createdAt.seconds * 1000 : new Date(a.createdAt).getTime()) : 0;
+        const tb = b.paidAt ? (b.paidAt.seconds ? b.paidAt.seconds * 1000 : new Date(b.paidAt).getTime()) : b.createdAt ? (b.createdAt.seconds ? b.createdAt.seconds * 1000 : new Date(b.createdAt).getTime()) : 0;
         return tb - ta;
       });
       setStudentReports(list);
@@ -293,6 +311,7 @@ const StudentDashboard = () => {
         }
       } catch (err) {
         // ignore, try HTTP fallback
+        console.warn("sendPaymentReceipt callable failed:", err);
       }
 
       const base = process.env.REACT_APP_FUNCTIONS_URL || "";
@@ -337,17 +356,17 @@ const StudentDashboard = () => {
           const promoterResolved = await resolvePromoterInfo(mappedPromoter);
 
           // Build packagesPayload (shape expected by Cloud Function)
-          // Use packageCost (rupees) and commission percent from pkg.commission (as you requested)
           const packagesPayload = cart.map((pkg) => {
             const pkgPrice = safeNum(pkg.totalPayable || pkg.price || pkg.packageCost || 0);
-            const commissionPercent = safeNum(pkg.commission ?? pkg.promoterCommission ?? pkg.commissionPercent ?? pkg.commissionPercent ?? 0);
+            const commissionPercent = safeNum(pkg.commission ?? pkg.promoterCommission ?? pkg.commissionPercent ?? 0);
             return {
               id: pkg.id,
               packageName: pkg.packageName || pkg.concept || "",
               subject: pkg.subject || "",
               subtopic: pkg.subtopic || "",
               chapter: pkg.chapter || "",
-              price: Number(pkgPrice), // the server expects price (in rupees)
+              packageCost: Number(pkgPrice), // server code reads packageCost or price; include both
+              price: Number(pkgPrice),
               commission: Number(commissionPercent), // percent number
               studentName: studentInfo.name || "",
               phone: studentInfo.phone || auth.currentUser?.phoneNumber || "",
@@ -362,6 +381,7 @@ const StudentDashboard = () => {
             packages: packagesPayload,
             totalAmount: Number(cartTotal),
             mappedPromoter: studentInfo.mappedPromoter || null, // pass uniqueId or uid if set on user doc
+            createPerPackage: false,
           };
 
           // Try callables (prefer server-side logic)
@@ -369,28 +389,46 @@ const StudentDashboard = () => {
           let savedPaymentDocId = null;
           let lastErr = null;
 
+          // Helper to interpret callable result shapes
+          const interpretCallableResult = (res) => {
+            if (!res) return null;
+            const d = res.data || {};
+            if (d.success && Array.isArray(d.details) && d.details.length) {
+              return d.details[0]?.paymentDocId || d.paymentDocIds?.[0] || null;
+            }
+            if (d.success && Array.isArray(d.paymentDocIds) && d.paymentDocIds.length) {
+              return d.paymentDocIds[0];
+            }
+            // fallback: maybe function returned { success: true, paymentDocId: "..." }
+            if (d.success && (d.paymentDocId || d.paymentId)) return d.paymentDocId || d.paymentId;
+            return null;
+          };
+
+          // 1) createPaymentRecord
           try {
             const createPaymentRecord = httpsCallable(functions, "createPaymentRecord");
             const res = await createPaymentRecord(callablePayload);
             console.log("createPaymentRecord result:", res?.data);
-            if (res && res.data && res.data.success && Array.isArray(res.data.details)) {
+            const id = interpretCallableResult(res);
+            if (id) {
               saved = true;
-              // take first paymentDocId (if multiple packages were written, there will be one per package)
-              savedPaymentDocId = res.data.details[0]?.paymentDocId || null;
+              savedPaymentDocId = id;
             }
           } catch (err) {
             console.warn("createPaymentRecord callable failed:", err);
             lastErr = err;
           }
 
+          // 2) adminCreatePayment (only if first failed)
           if (!saved) {
             try {
               const adminCreatePayment = httpsCallable(functions, "adminCreatePayment");
               const res2 = await adminCreatePayment({ payment: callablePayload });
               console.log("adminCreatePayment result:", res2?.data);
-              if (res2 && res2.data && res2.data.success && Array.isArray(res2.data.details)) {
+              const id2 = interpretCallableResult(res2);
+              if (id2) {
                 saved = true;
-                savedPaymentDocId = res2.data.details[0]?.paymentDocId || null;
+                savedPaymentDocId = id2;
               }
             } catch (err2) {
               console.warn("adminCreatePayment callable failed:", err2);
@@ -398,7 +436,7 @@ const StudentDashboard = () => {
             }
           }
 
-          // Fallback: client-side write to /payments (only if callables failed)
+          // 3) Fallback: client-side write to /payments (only if callables failed)
           if (!saved) {
             try {
               // We will store one document that contains the full payload (packages array inside)
@@ -453,10 +491,10 @@ const StudentDashboard = () => {
             console.warn("Receipt sending attempt failed:", e);
           }
 
-          // On success: clear cart and refresh reports (short delay for DB consistency)
+          // On success: clear cart and refresh reports (delay so Firestore triggers finish)
           setCart([]);
           setActiveTab("reports");
-          setTimeout(() => fetchStudentReports(), 800);
+          setTimeout(() => fetchStudentReports(), 900);
         } catch (err) {
           console.error("Error in payment handler:", err);
           alert("Payment succeeded but something went wrong while saving. Check console.");
@@ -1048,7 +1086,7 @@ const StudentDashboard = () => {
                     <div style={{ fontSize: "12px", color: "#ddd" }}>{pkg.subject ? normalizeSubject(pkg.subject) : ""}</div>
                   </div>
                   <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                    <div>₹{parseFloat(pkg.totalPayable || pkg.price || 0).toFixed(2)}</div>
+                    <div>₹{parseFloat(pkg.totalPayable || pkg.price || pkg.packageCost || 0).toFixed(2)}</div>
                     <button
                       onClick={() => removeFromCart(pkg.id)}
                       style={{
