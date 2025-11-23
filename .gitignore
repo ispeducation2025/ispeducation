@@ -25,3 +25,5 @@ yarn-error.log*
 # Firebase credentials and cache
 serviceAccountKey.json
 .firebase/
+"functions/node_modules/" 
+"functions/node_modules/" 
