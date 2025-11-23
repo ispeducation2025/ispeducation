@@ -96,6 +96,24 @@ const styles = {
     cursor: "pointer",
     padding: 8,
   },
+  smallBtn: {
+    padding: "6px 8px",
+    borderRadius: 6,
+    border: "1px solid #cbd5e1",
+    background: "#fff",
+    cursor: "pointer",
+  },
+  rawBox: {
+    whiteSpace: "pre-wrap",
+    fontSize: 12,
+    maxHeight: 200,
+    overflow: "auto",
+    background: "#0f172a",
+    color: "#fff",
+    padding: 8,
+    borderRadius: 6,
+    marginTop: 8,
+  }
 };
 
 /* -------------------------
@@ -118,39 +136,43 @@ function getNextPaymentCycleForDate(dateLike) {
 }
 
 /* -------------------------
-   Email helper (Cloud Function)
+   Safe date helper
    ------------------------- */
-async function sendEmail(payload) {
-  const base = process.env.REACT_APP_FUNCTIONS_URL || "";
-  if (!base) {
-    console.warn("REACT_APP_FUNCTIONS_URL not configured. Email not sent.", payload);
-    return { ok: false, error: "FUNCTIONS_URL_NOT_CONFIGURED" };
+function toDate(value) {
+  if (!value && value !== 0) return null;
+  if (value instanceof Date) return value;
+  if (value && typeof value.toMillis === "function") {
+    return new Date(value.toMillis());
   }
-  try {
-    const res = await fetch(base + "/send-email", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-    const json = await res.json();
-    return { ok: res.ok, data: json };
-  } catch (err) {
-    console.error("sendEmail error", err);
-    return { ok: false, error: err.message || err };
+  if (value && typeof value.seconds === "number") {
+    return new Date(Number(value.seconds) * 1000);
   }
+  if (typeof value === "number") {
+    return new Date(value);
+  }
+  if (typeof value === "string") {
+    const d = new Date(value);
+    if (!isNaN(d.getTime())) return d;
+  }
+  return null;
 }
 
 /* -------------------------
    Money / commission helpers
    ------------------------- */
 
+/**
+ * Attempts to extract a rupee amount from the payment / package object.
+ * Handles common paise-integer scenarios (Razorpay raw amounts).
+ */
 function parseMoneyFromPayment(p = {}) {
   if (!p) return 0;
   const candidates = [
-    { v: p.amount, meta: "amount" },
     { v: p.packageCost, meta: "packageCost" },
-    { v: p.totalPayable, meta: "totalPayable" },
     { v: p.price, meta: "price" },
+    { v: p.amount, meta: "amount" },
+    { v: p.totalPayable, meta: "totalPayable" },
+    { v: p.package_cost, meta: "package_cost" },
     { v: (p.rawRazorpay && p.rawRazorpay.amount), meta: "rawRazorpay.amount" },
     { v: (p.raw && p.raw.amount), meta: "raw.amount" },
     { v: (p.rawRazorpay && p.rawRazorpay.amount_paid), meta: "rawRazorpay.amount_paid" },
@@ -161,7 +183,10 @@ function parseMoneyFromPayment(p = {}) {
     if (c.v === undefined || c.v === null || c.v === "") continue;
     const num = Number(c.v);
     if (!isFinite(num)) continue;
-    if ((c.meta.includes("raw") || c.meta.includes("razor") || c.meta.includes("data")) && Math.abs(num) >= 100) {
+    // Raw amounts commonly come in paise/cents (>=100)
+    if (c.meta.startsWith("raw") && Math.abs(num) >= 100) return num / 100;
+    if ((c.meta === "amount" || c.meta === "price" || c.meta === "packageCost" || c.meta === "totalPayable") && Math.abs(num) >= 100 && Math.abs(num) % 100 === 0) {
+      // very likely paise -> convert
       return num / 100;
     }
     return num;
@@ -211,7 +236,13 @@ export default function PromoterDashboard() {
 
   const recaptchaRenderedRef = useRef(false);
 
-  // window resize listener for responsiveness
+  // permission banner flag
+  const [permissionBlocked, setPermissionBlocked] = useState(false);
+
+  // debug UI state: which raw payment to show
+  const [openRawPaymentId, setOpenRawPaymentId] = useState(null);
+
+  // window resize listener
   useEffect(() => {
     function onResize() {
       setWindowWidth(window.innerWidth);
@@ -315,6 +346,356 @@ export default function PromoterDashboard() {
     return { found };
   }
 
+  /**
+   * Build commission rows from payments.
+   * IMPORTANT: supports payment docs that either represent a single package or contain `packages: []`.
+   *
+   * Each commission row represents ONE package (so multi-package payments expand to multiple rows).
+   *
+   * Commission amount is calculated as:
+   *   commissionAmount = packageCost * commissionPercent / 100
+   * where packageCost is determined by:
+   *   pkg.packageCost -> pkg.price -> pkg.package_cost -> parseMoneyFromPayment(pkg) -> parseMoneyFromPayment(paymentDoc)
+   *
+   * commissionPercent is pulled primarily from package master (pkgs param) by id or by packageName. Falls back to fields on package/payment.
+   */
+  function buildRowsFromPayments(paymentsList, finalStudents, pkgs) {
+    const rows = [];
+
+    const findPackageMasterCommission = (pkgIdOrName) => {
+      if (!pkgs || !Array.isArray(pkgs)) return null;
+      // try by id first
+      const byId = pkgs.find((x) => x.id === pkgIdOrName);
+      if (byId) return byId;
+      // try by packageName (case-insensitive)
+      const byName = pkgs.find((x) => (x.packageName || "").toLowerCase() === (pkgIdOrName || "").toLowerCase());
+      if (byName) return byName;
+      return null;
+    };
+
+    const getCanonicalStudent = (payment) => {
+      return finalStudents.find((st) => st.id === payment.studentId) || { name: payment.studentName || "Student", id: payment.studentId };
+    };
+
+    paymentsList.forEach((payment) => {
+      // Some payments include a packages array (preferred). If present, expand each package into its own row.
+      const packagesArray = Array.isArray(payment.packages) && payment.packages.length > 0 ? payment.packages : null;
+
+      if (packagesArray) {
+        packagesArray.forEach((pkgEntry, idx) => {
+          // Resolve packageCost (prefer package-level fields)
+          let packageCost = safeParseFloat(pkgEntry.packageCost ?? pkgEntry.price ?? pkgEntry.package_cost ?? 0);
+          if (!packageCost || packageCost === 0) {
+            packageCost = parseMoneyFromPayment(pkgEntry) || parseMoneyFromPayment(payment) || 0;
+          }
+
+          // Find master package doc to read commission percent if available
+          let commissionPercent = 0;
+          const pkgMaster = findPackageMasterCommission(pkgEntry.id ?? pkgEntry.packageId ?? pkgEntry.packageIdString ?? pkgEntry.packageIdRaw ?? pkgEntry.packageName);
+          if (pkgMaster) {
+            commissionPercent = safeParseFloat(pkgMaster.commission ?? pkgMaster.promoterCommission ?? pkgMaster.commissionPercent ?? pkgMaster.commission_pct ?? 0);
+          }
+
+          // fallback to fields on packageEntry or payment
+          if ((!commissionPercent || commissionPercent === 0)) {
+            commissionPercent = safeParseFloat(pkgEntry.commission ?? pkgEntry.promoterCommission ?? pkgEntry.commissionPercent ?? pkgEntry.commission_pct ?? payment.commissionPercent ?? payment.commission ?? payment.promoterCommission ?? 0);
+          }
+
+          commissionPercent = isFinite(Number(commissionPercent)) ? Number(commissionPercent) : 0;
+
+          // explicit commission amount if present
+          let explicitCommissionAmount = safeParseFloat(pkgEntry.commissionAmount ?? pkgEntry.commission_total ?? pkgEntry.commissionTotal ?? payment.commissionAmount ?? payment.commission_total ?? payment.commissionTotal ?? 0);
+
+          // If explicit looks like paise while packageCost is small, convert
+          if (explicitCommissionAmount > 0 && explicitCommissionAmount >= 100 && packageCost < 100) {
+            explicitCommissionAmount = explicitCommissionAmount / 100;
+          }
+
+          let commissionAmount = 0;
+          if (explicitCommissionAmount > 0) {
+            commissionAmount = explicitCommissionAmount;
+          } else if (isFinite(packageCost) && commissionPercent > 0) {
+            commissionAmount = (Number(packageCost) * Number(commissionPercent)) / 100;
+          } else {
+            commissionAmount = 0;
+          }
+
+          commissionAmount = Math.round((Number(commissionAmount) + Number.EPSILON) * 100) / 100;
+
+          const studentObj = getCanonicalStudent(payment);
+          const displayName = studentObj?.name || payment.studentName || payment.student_name || payment.rawRazorpay?.contact || payment.raw?.contact || payment.email || "";
+
+          rows.push({
+            name: displayName || `Student (${payment.studentId || "?"})`,
+            studentId: payment.studentId || payment.student_id || null,
+            packageName: pkgEntry.packageName || pkgEntry.concept || pkgEntry.package || payment.packageName || `package-${idx + 1}`,
+            packageCost: Number(packageCost || 0),
+            commissionPercent: Number(commissionPercent || 0),
+            commissionAmount: Number(commissionAmount || 0),
+            commissionPaid: !!(
+              pkgEntry.promoterPaid === true ||
+              pkgEntry.commissionPaid === true ||
+              payment.promoterPaid === true ||
+              payment.commissionPaid === true ||
+              payment.adminMarked === true ||
+              (String(payment.status || payment.paymentStatus || payment.settlementStatus || "").toLowerCase() === "settled")
+            ),
+            createdAt: toDate(payment.createdAt || payment.paidAt || payment.paymentDate) || new Date(),
+            paymentId: payment.paymentId || payment.id,
+            receiptUrl: payment.receiptUrl || (payment.rawRazorpay && payment.rawRazorpay.short_url) || null,
+            paymentStatus: payment.status || payment.settlementStatus || payment.paymentStatus || "pending",
+            raw: { payment, package: pkgEntry },
+          });
+        });
+      } else {
+        // Single-package style payment doc (no packages array)
+        const pkgEntry = payment;
+        let packageCost = safeParseFloat(pkgEntry.packageCost ?? pkgEntry.price ?? pkgEntry.package_cost ?? 0);
+        if (!packageCost || packageCost === 0) {
+          packageCost = parseMoneyFromPayment(pkgEntry) || 0;
+        }
+
+        // master lookup
+        let commissionPercent = 0;
+        const pkgMaster = findPackageMasterCommission(payment.packageId ?? payment.packageIdString ?? payment.packageName ?? payment.package);
+        if (pkgMaster) {
+          commissionPercent = safeParseFloat(pkgMaster.commission ?? pkgMaster.promoterCommission ?? pkgMaster.commissionPercent ?? pkgMaster.commission_pct ?? 0);
+        }
+
+        if ((!commissionPercent || commissionPercent === 0)) {
+          commissionPercent = safeParseFloat(payment.commission ?? payment.commissionPercent ?? payment.promoterCommission ?? payment.promoterCommissionPercent ?? 0);
+        }
+
+        commissionPercent = isFinite(Number(commissionPercent)) ? Number(commissionPercent) : 0;
+
+        let explicitCommissionAmount = safeParseFloat(payment.commissionAmount ?? payment.commission_total ?? payment.commissionTotal ?? 0);
+        if (explicitCommissionAmount > 0 && explicitCommissionAmount >= 100 && packageCost < 100) {
+          explicitCommissionAmount = explicitCommissionAmount / 100;
+        }
+
+        let commissionAmount = 0;
+        if (explicitCommissionAmount > 0) {
+          commissionAmount = explicitCommissionAmount;
+        } else if (isFinite(packageCost) && commissionPercent > 0) {
+          commissionAmount = (Number(packageCost) * Number(commissionPercent)) / 100;
+        } else {
+          commissionAmount = 0;
+        }
+
+        commissionAmount = Math.round((Number(commissionAmount) + Number.EPSILON) * 100) / 100;
+
+        const studentObj = getCanonicalStudent(payment);
+        const displayName = studentObj?.name || payment.studentName || payment.student_name || payment.rawRazorpay?.contact || payment.raw?.contact || payment.email || "";
+
+        rows.push({
+          name: displayName || `Student (${payment.studentId || "?"})`,
+          studentId: payment.studentId || payment.student_id || null,
+          packageName: payment.packageName || payment.package || "-",
+          packageCost: Number(packageCost || 0),
+          commissionPercent: Number(commissionPercent || 0),
+          commissionAmount: Number(commissionAmount || 0),
+          commissionPaid: !!(
+            payment.promoterPaid === true ||
+            payment.commissionPaid === true ||
+            payment.adminMarked === true ||
+            (String(payment.status || payment.paymentStatus || payment.settlementStatus || "").toLowerCase() === "settled")
+          ),
+          createdAt: toDate(payment.createdAt || payment.paidAt || payment.paymentDate) || new Date(),
+          paymentId: payment.paymentId || payment.id,
+          receiptUrl: payment.receiptUrl || (payment.rawRazorpay && payment.rawRazorpay.short_url) || null,
+          paymentStatus: payment.status || payment.settlementStatus || payment.paymentStatus || "pending",
+          raw: payment,
+        });
+      }
+    });
+
+    return rows;
+  }
+
+  // Build rows from student docs fallback
+  function buildRowsFromStudents(finalStudents) {
+    const rows = [];
+    finalStudents.forEach((s) => {
+      const cost = safeParseFloat(s.paidAmount || s.packageCost || s.amount || 0) || 0;
+      const perc = safeParseFloat(s.promoterCommission || s.promoterCommissionPercent || s.commissionPercent || 0) || 0;
+      const createdAtDate = toDate(s.createdAt) || new Date();
+      const commAmt = Math.round(((Number(cost) * Number(perc)) / 100 + Number.EPSILON) * 100) / 100;
+      rows.push({
+        name: s.name,
+        studentId: s.id,
+        packageName: s.packageName || "-",
+        packageCost: Number(cost || 0),
+        commissionPercent: Number(perc || 0),
+        commissionAmount: Number(commAmt || 0),
+        commissionPaid: !!s.promoterPaid,
+        createdAt: createdAtDate,
+        paymentId: s.paymentId || "-",
+        receiptUrl: s.lastReceiptUrl || null,
+        paymentStatus: s.promoterPaid ? "paid" : "pending",
+        raw: s,
+      });
+    });
+    return rows;
+  }
+
+  // Enhanced: Fetch names for payments by checking users, studentDatabase, and by email/paymentId
+  async function fetchStudentNamesForPayments(paymentsList) {
+    const missingPayments = paymentsList.filter((p) => (!p.studentName || p.studentName === null || p.studentName === ""));
+    const missingIds = Array.from(new Set(missingPayments.map((p) => p.studentId).filter(Boolean)));
+    const idToName = {};
+
+    // 1) try users/{id}
+    await Promise.all(missingIds.map(async (id) => {
+      try {
+        const uDoc = await getDoc(doc(db, "users", id));
+        if (uDoc.exists()) {
+          const u = uDoc.data() || {};
+          idToName[id] = u.name || u.displayName || u.email || u.phone || null;
+        } else {
+          idToName[id] = null;
+        }
+      } catch (e) {
+        idToName[id] = null;
+      }
+    }));
+
+    // 2) for remaining ids not resolved, try studentDatabase/{id}
+    const unresolvedIds = missingIds.filter((id) => !idToName[id]);
+    if (unresolvedIds.length > 0) {
+      await Promise.all(unresolvedIds.map(async (id) => {
+        try {
+          const sdDoc = await getDoc(doc(db, "studentDatabase", id));
+          if (sdDoc.exists()) {
+            const sd = sdDoc.data() || {};
+            idToName[id] = sd.name || sd.studentName || sd.email || null;
+          }
+        } catch (e) {
+          // ignore
+        }
+      }));
+    }
+
+    // 3) For payments where studentId wasn't helpful, try matching by email or phone across users and studentDatabase
+    const emailToResolve = {};
+    const phoneToResolve = {};
+    paymentsList.forEach((p) => {
+      const e = p.email || p.studentEmail || (p.rawRazorpay && p.rawRazorpay.email) || (p.raw && p.raw.email) || null;
+      const ph = p.phone || p.studentPhone || (p.rawRazorpay && p.rawRazorpay.contact) || (p.raw && p.raw.contact) || null;
+      if (e) emailToResolve[e] = emailToResolve[e] || [];
+      if (e && p.studentId) emailToResolve[e].push(p.studentId);
+      if (ph) phoneToResolve[ph] = phoneToResolve[ph] || [];
+      if (ph && p.studentId) phoneToResolve[ph].push(p.studentId);
+    });
+
+    const unresolvedEmails = Object.keys(emailToResolve).filter((em) => em && !Object.values(idToName).includes(em));
+    for (const em of unresolvedEmails) {
+      try {
+        const q = await getDocs(query(collection(db, "users"), where("email", "==", em)));
+        if (!q.empty) {
+          q.forEach((d) => {
+            const ud = d.data() || {};
+            const name = ud.name || ud.displayName || ud.email || null;
+            (emailToResolve[em] || []).forEach((sid) => {
+              if (!idToName[sid]) idToName[sid] = name;
+            });
+          });
+        }
+      } catch (e) { /* ignore */ }
+    }
+
+    for (const em of unresolvedEmails) {
+      try {
+        const q = await getDocs(query(collection(db, "studentDatabase"), where("email", "==", em)));
+        if (!q.empty) {
+          q.forEach((d) => {
+            const sd = d.data() || {};
+            const name = sd.name || sd.studentName || sd.email || null;
+            (emailToResolve[em] || []).forEach((sid) => {
+              if (!idToName[sid]) idToName[sid] = name;
+            });
+          });
+        }
+      } catch (e) { /* ignore */ }
+    }
+
+    const unresolvedPhones = Object.keys(phoneToResolve);
+    for (const ph of unresolvedPhones) {
+      try {
+        const q = await getDocs(query(collection(db, "users"), where("phone", "==", ph)));
+        if (!q.empty) {
+          q.forEach((d) => {
+            const ud = d.data() || {};
+            const name = ud.name || ud.displayName || ud.email || null;
+            (phoneToResolve[ph] || []).forEach((sid) => {
+              if (!idToName[sid]) idToName[sid] = name;
+            });
+          });
+        }
+      } catch (e) { /* ignore */ }
+    }
+
+    for (const ph of unresolvedPhones) {
+      try {
+        const q = await getDocs(query(collection(db, "studentDatabase"), where("phone", "==", ph)));
+        if (!q.empty) {
+          q.forEach((d) => {
+            const sd = d.data() || {};
+            const name = sd.name || sd.studentName || sd.email || null;
+            (phoneToResolve[ph] || []).forEach((sid) => {
+              if (!idToName[sid]) idToName[sid] = name;
+            });
+          });
+        }
+      } catch (e) { /* ignore */ }
+    }
+
+    // 4) final fallback: try to match payment by paymentId inside studentDatabase (some setups store a paymentsRef)
+    await Promise.all(paymentsList.map(async (p) => {
+      if ((!p.studentName || p.studentName === null || p.studentName === "") && p.paymentId) {
+        try {
+          const q = await getDocs(query(collection(db, "studentDatabase"), where("paymentId", "==", p.paymentId)));
+          if (!q.empty) {
+            const sd = q.docs[0].data() || {};
+            if (p.studentId) idToName[p.studentId] = idToName[p.studentId] || (sd.name || sd.studentName || sd.email || null);
+            else {
+              idToName[`payment:${p.paymentId}`] = sd.name || sd.studentName || sd.email || null;
+            }
+          }
+        } catch (e) { /* ignore */ }
+      }
+    }));
+
+    // Where still unresolved, use rawRazorpay contact/email as best-effort
+    paymentsList.forEach((p) => {
+      if (p.studentId) {
+        if (!idToName[p.studentId] || idToName[p.studentId] === null) {
+          const rz = p.rawRazorpay || p.raw || {};
+          const candidate = rz.contact || rz.email || p.email || p.studentEmail || null;
+          if (candidate) idToName[p.studentId] = candidate;
+        }
+      }
+    });
+
+    // More informative unresolved logging
+    const unresolved = missingPayments.filter((p) => {
+      const n = p.studentId ? idToName[p.studentId] : idToName[`payment:${p.paymentId}`];
+      return !n;
+    });
+    if (unresolved.length > 0) {
+      console.info(
+        "PromoterDashboard: unresolved payments (no student name found) — sample info:",
+        unresolved.slice(0,5).map(p => ({
+          paymentId: p.paymentId || p.id,
+          studentId: p.studentId,
+          rawContact: p.rawRazorpay?.contact || p.raw?.contact || null,
+          rawEmail: p.rawRazorpay?.email || p.raw?.email || p.email || null,
+        }))
+      );
+    }
+
+    return idToName;
+  }
+
   // auth + data bootstrap
   useEffect(() => {
     setLoading(true);
@@ -352,7 +733,6 @@ export default function PromoterDashboard() {
           setPayoutEmail(pd.email || "");
         }
 
-        // canonical id
         const canonicalUniqueId =
           (pd.uniqueId && String(pd.uniqueId).trim()) ||
           (pd.uniqueID && String(pd.uniqueID).trim()) ||
@@ -360,17 +740,20 @@ export default function PromoterDashboard() {
           null;
         const promoterDocId = promoterDocSnap.id;
 
-        // ----- USE CALLABLE FUNCTION FIRST -----
+        // ----- USE CALLABLE FUNCTION FIRST (students) -----
         let foundStudents = [];
         try {
-          const functions = getFunctions();
+          // specify region the function was deployed to
+          const functions = getFunctions(undefined, "us-central1");
           const fn = httpsCallable(functions, "getPromoterStudents");
           const resp = await fn({ promoterUniqueId: canonicalUniqueId, promoterDocId });
           if (resp && resp.data && resp.data.success) {
             foundStudents = resp.data.students || [];
+            console.info("getPromoterStudents (callable) returned", foundStudents.length, "students");
           }
         } catch (fnErr) {
-          // callable may fail; fall back
+          // callable may fail; fall back to client-side discovery
+          console.info("getPromoterStudents callable failed — falling back to client-side discovery.");
         }
 
         if (foundStudents.length === 0) {
@@ -381,10 +764,11 @@ export default function PromoterDashboard() {
           });
           if (clientRes.found && clientRes.found.length > 0) {
             foundStudents = clientRes.found;
+            console.info("discoverStudentsClientSide found", foundStudents.length, "students");
           }
         }
 
-        // dedupe
+        // dedupe students
         const dedup = {};
         foundStudents.forEach((s) => {
           dedup[s.id] = s;
@@ -392,142 +776,120 @@ export default function PromoterDashboard() {
         const finalStudents = Object.values(dedup);
         setStudents(finalStudents);
 
-        // --- payments ---
-        // Instead of full-collection scan, try targeted queries then fall back to full scan if nothing found
+        // --- payments (targeted queries only) ---
         const paymentsCol = collection(db, "payments");
         const paymentsDocsMap = {};
-
         const qList = [];
-        // promoterUid
+
+        // targeted promoter identity queries
         qList.push(query(paymentsCol, where("promoterUid", "==", uid)));
-        // promoterId (doc id)
         qList.push(query(paymentsCol, where("promoterId", "==", promoterDocId)));
-        // common alternate fields
         qList.push(query(paymentsCol, where("promoter", "==", uid)));
         qList.push(query(paymentsCol, where("promoter_id", "==", promoterDocId)));
 
-        // If we have student ids, query payments by studentId (in batches of 10)
+        // if canonicalUniqueId is present, attempt query by promoterUniqueId
+        if (canonicalUniqueId) {
+          qList.push(query(paymentsCol, where("promoterUniqueId", "==", canonicalUniqueId)));
+        }
+
+        // studentId batched 'in' queries (safe if allowed by rules)
         const studentIds = finalStudents.map((s) => s.id).filter(Boolean);
-        const studentIdBatches = [];
-        for (let i = 0; i < studentIds.length; i += 10) studentIdBatches.push(studentIds.slice(i, i + 10));
-        for (const batch of studentIdBatches) {
+        for (let i = 0; i < studentIds.length; i += 10) {
+          const batch = studentIds.slice(i, i + 10);
           if (batch.length === 0) continue;
           qList.push(query(paymentsCol, where("studentId", "in", batch)));
         }
 
-        // execute all queries in parallel (ignore failures)
-        const qResults = await Promise.all(
-          qList.map((q) => getDocs(q).catch((e) => ({ docs: [] })))
-        );
-
-        qResults.forEach((snap) => {
-          if (!snap || !snap.docs) return;
-          snap.docs.forEach((d) => {
-            paymentsDocsMap[d.id] = { id: d.id, ...d.data() };
-          });
-        });
-
-        // If nothing found with queries, fallback to collection scan (last resort)
-        if (Object.keys(paymentsDocsMap).length === 0) {
-          try {
-            const allSnap = await getDocs(paymentsCol);
-            allSnap.docs.forEach((d) => {
+        let targetedFailed = false;
+        try {
+          const qResults = await Promise.all(qList.map((q) => getDocs(q)));
+          qResults.forEach((snap) => {
+            if (!snap || !snap.docs) return;
+            snap.docs.forEach((d) => {
               paymentsDocsMap[d.id] = { id: d.id, ...d.data() };
             });
-          } catch (e) {
-            console.warn("Failed fallback scanning payments collection:", e);
+          });
+          setPermissionBlocked(false);
+        } catch (err) {
+          // single concise message instead of repeated noisy warnings
+          console.info("Client payments read blocked by Firestore rules; falling back to server callable.");
+          targetedFailed = true;
+          setPermissionBlocked(true);
+        }
+
+        // If targeted queries returned results, use them.
+        let paymentsList = Object.values(paymentsDocsMap);
+
+        // If targetedFailed or no payments returned, try a secure callable to get payments (server side)
+        if ((paymentsList.length === 0 || targetedFailed)) {
+          try {
+            const functions = getFunctions(undefined, "us-central1");
+            const fn = httpsCallable(functions, "getPromoterPayments");
+            const resp = await fn({ promoterUniqueId: canonicalUniqueId, promoterDocId });
+            if (resp && resp.data && resp.data.success) {
+              paymentsList = resp.data.payments || [];
+              setPermissionBlocked(false);
+              console.info("getPromoterPayments (callable) returned", paymentsList.length, "payments");
+            } else {
+              console.info("getPromoterPayments returned no success flag", resp);
+            }
+          } catch (fnErr) {
+            console.info("getPromoterPayments callable failed or unavailable.");
           }
         }
 
-        const paymentsList = Object.values(paymentsDocsMap);
+        // If payment list has entries missing studentName, try to resolve them
+        if (paymentsList.length > 0) {
+          const idToName = await fetchStudentNamesForPayments(paymentsList);
+          paymentsList = paymentsList.map((p) => {
+            // unify common variants
+            p.studentId = p.studentId || p.student_id || p.student || null;
+            p.paymentId = p.paymentId || p.id || null;
 
-        const promoterPayments = paymentsList.filter((p) => {
-          const pPromoterIds = [
-            p.promoterId && String(p.promoterId).trim(),
-            p.promoterUid && String(p.promoterUid).trim(),
-            p.promoter && String(p.promoter).trim(),
-            p.promoter_id && String(p.promoter_id).trim(),
-          ].filter(Boolean);
-
-          const checkPromoterMatch =
-            (canonicalUniqueId && pPromoterIds.includes(canonicalUniqueId)) ||
-            pPromoterIds.includes(uid) ||
-            pPromoterIds.includes(promoterDocId);
-
-          const fromKnownStudent = p.studentId && finalStudents.some((s) => s.id === p.studentId);
-
-          return checkPromoterMatch || fromKnownStudent;
-        });
-
-        const rows = promoterPayments.map((p) => {
-          const studentObj = finalStudents.find((st) => st.id === p.studentId) || { name: p.studentName || "Student", id: p.studentId };
-
-          const packageCost = parseMoneyFromPayment(p) || 0;
-
-          let commissionPercent =
-            safeParseFloat(p.promoterCommissionPercent ?? p.commissionPercent ?? p.promoterCommission ?? p.commission ?? p.commission_pct);
-          if (!isFinite(commissionPercent) || commissionPercent === 0) {
-            if (p.packageId) {
-              const pkg = packages.find((x) => x.id === p.packageId || x.packageId === p.packageId);
-              if (pkg) commissionPercent = safeParseFloat(pkg.commission ?? pkg.promoterCommission ?? pkg.commissionPercent);
-            } else if (p.packageName) {
-              const pkg = packages.find((x) => (x.packageName || "").toLowerCase() === (p.packageName || "").toLowerCase());
-              if (pkg) commissionPercent = safeParseFloat(pkg.commission ?? pkg.promoterCommission ?? pkg.commissionPercent);
+            if ((!p.studentName || p.studentName === null || p.studentName === "")) {
+              const resolved = (p.studentId && idToName[p.studentId]) || idToName[`payment:${p.paymentId}`];
+              const fallbackFromRazor = (p.rawRazorpay && (p.rawRazorpay.contact || p.rawRazorpay.email)) || null;
+              const fallbackEmail = p.email || p.studentEmail || (p.raw && p.raw.email) || null;
+              const fallbackPhone = p.phone || p.studentPhone || (p.raw && p.raw.contact) || null;
+              p.studentName = resolved || fallbackFromRazor || fallbackEmail || fallbackPhone || p.studentName || "";
             }
-          }
-          commissionPercent = isFinite(commissionPercent) ? commissionPercent : 0;
 
-          const explicitCommissionAmount =
-            safeParseFloat(p.commissionAmount ?? p.commission_paid_amount ?? p.commissionPaidAmount ?? p.promoterCommissionAmount);
-          const commissionAmount = explicitCommissionAmount > 0 ? explicitCommissionAmount : (isFinite(packageCost) ? (packageCost * (commissionPercent || 0)) / 100 : 0);
+            // normalize packageCost if missing
+            if ((p.packageCost === undefined || p.packageCost === null || p.packageCost === 0) ) {
+              p.packageCost = parseMoneyFromPayment(p);
+            }
 
-          const statusRaw = String(p.status || p.paymentStatus || p.settlementStatus || "").toLowerCase();
-          const commissionPaidFlag = !!(
-            p.promoterPaid === true ||
-            p.commissionPaid === true ||
-            p.adminMarked === true ||
-            statusRaw === "commission_paid" ||
-            statusRaw === "commission-paid" ||
-            statusRaw === "settled" ||
-            statusRaw === "completed"
-          );
-
-          return {
-            name: studentObj.name,
-            studentId: p.studentId,
-            packageName: p.packageName || p.package || "-",
-            packageCost,
-            commissionPercent,
-            commissionAmount,
-            commissionPaid: commissionPaidFlag,
-            createdAt: p.createdAt || p.paymentDate || p.paidAt || new Date().toISOString(),
-            paymentId: p.paymentId || p.id,
-            receiptUrl: p.receiptUrl || (p.rawRazorpay && p.rawRazorpay.short_url) || null,
-            paymentStatus: p.status || p.settlementStatus || p.paymentStatus || "pending",
-            raw: p,
-          };
-        });
-
-        // If no payments but students exist, use student-level fields as best-effort
-        if (rows.length === 0 && finalStudents.length > 0) {
-          finalStudents.forEach((s) => {
-            const cost = safeParseFloat(s.paidAmount || s.packageCost || 0) || 0;
-            const perc = safeParseFloat(s.promoterCommission || s.promoterCommissionPercent || 0) || 0;
-            rows.push({
-              name: s.name,
-              studentId: s.id,
-              packageName: s.packageName || "-",
-              packageCost: cost,
-              commissionPercent: perc,
-              commissionAmount: (cost * perc) / 100,
-              commissionPaid: !!s.promoterPaid,
-              createdAt: s.createdAt || new Date().toISOString(),
-              paymentId: s.paymentId || "-",
-              receiptUrl: s.lastReceiptUrl || null,
-              paymentStatus: s.promoterPaid ? "paid" : "pending",
-              raw: s,
-            });
+            return p;
           });
+
+          // Quick check: log any payment where studentName not resolved OR commission anomalies
+          const suspicious = paymentsList.filter((p) => {
+            const hasExplicitComm = safeParseFloat(p.commissionAmount || p.commissionTotal || p.commission_total || 0);
+            const commVal = safeParseFloat(p.commissionAmount || p.commissionTotal || p.commission_total || 0);
+            const pkg = parseMoneyFromPayment(p);
+            return ((!p.studentName || p.studentName === "") || (Number(commVal || 0) === 0 && Number(hasExplicitComm || 0) > 0) || (Number(commVal || 0) === 0 && pkg > 0 && Number(p.commissionPercent || p.commission_pct || 0) > 0));
+          });
+
+          if (suspicious.length > 0) {
+            console.info("PromoterDashboard: some payments still need attention; sample info:", suspicious.slice(0,5).map((x) => ({
+              paymentId: x.paymentId || x.id,
+              studentId: x.studentId,
+              studentName: x.studentName,
+              pkgCost: x.packageCost || parseMoneyFromPayment(x),
+              commissionAmount: x.commissionAmount || x.commissionTotal || x.commission_total || 0,
+              rawContact: x.rawRazorpay?.contact || x.raw?.contact || null,
+              rawEmail: x.rawRazorpay?.email || x.raw?.email || x.email || null,
+            })));
+          }
+        }
+
+        // If we still have no payments (callable failed or not present), derive from students
+        let rows = [];
+        if (paymentsList.length > 0) {
+          rows = buildRowsFromPayments(paymentsList, finalStudents, packages);
+        } else {
+          // fallback: build rows from student docs
+          rows = buildRowsFromStudents(finalStudents);
         }
 
         setCommissionRows(rows);
@@ -613,7 +975,7 @@ export default function PromoterDashboard() {
     }
   }
 
-  // save payout click handler
+  // save payout click handler (client-only stub)
   async function handleSavePayout() {
     if (!payoutEmail) {
       alert("Please provide an email for payout notifications.");
@@ -637,7 +999,7 @@ export default function PromoterDashboard() {
       const ok = window.confirm("We recommend verifying phone via OTP before saving. Proceed without verifying?");
       if (!ok) return;
     }
-    alert("Payout saved (client-side).");
+    alert("Payout saved (client-side). Implement server update to persist.");
   }
 
   // logout
@@ -657,12 +1019,18 @@ export default function PromoterDashboard() {
   const totals = commissionRows.reduce(
     (acc, r) => {
       const amount = Number(r.commissionAmount || 0);
-      acc.total += amount;
-      if (!r.commissionPaid) acc.pending += amount;
+      acc.total += isFinite(amount) ? amount : 0;
+      if (!r.commissionPaid) acc.pending += isFinite(amount) ? amount : 0;
       return acc;
     },
     { total: 0, pending: 0 }
   );
+
+  // safe presentation helpers for JSX
+  const renderDate = (value) => {
+    const d = toDate(value);
+    return d ? d.toLocaleString() : "—";
+  };
 
   return (
     <div style={styles.root}>
@@ -735,6 +1103,19 @@ export default function PromoterDashboard() {
 
         {/* Content area */}
         <div style={{ marginTop: 18 }}>
+          {/* permission banner */}
+          {permissionBlocked && (
+            <div style={{ background: "#ffefef", color: "#7b1d1d", padding: 12, borderRadius: 8, marginBottom: 12 }}>
+              <strong>Notice:</strong> Direct reads on the `payments` collection are blocked by Firestore rules for your account.
+              The dashboard tried targeted queries but lacked permissions. Ask your admin to either:
+              <ul style={{ marginTop: 8 }}>
+                <li>Allow targeted promoter reads in rules for payment docs, or</li>
+                <li>Provide a secure Cloud Function `getPromoterPayments` that returns payments for the promoter (recommended).</li>
+              </ul>
+              Meanwhile, the dashboard uses safe fallbacks to show commission (derived from student records or server function if available).
+            </div>
+          )}
+
           {/* Dashboard */}
           {activeTab === "dashboard" && (
             <section>
@@ -755,7 +1136,7 @@ export default function PromoterDashboard() {
                   <p style={{ margin: 6 }}><b>Linked Account:</b> {promoter?.bankDetails ? (promoter.bankDetails.type === "UPI" ? promoter.bankDetails.upiId : promoter.bankDetails.bankName) : "Not linked"}</p>
                   <p style={{ margin: 6 }}><b>Verified:</b> {promoter?.bankDetails?.verified ? <span style={{ color: "#16a34a" }}>Yes <FaCheckCircle /></span> : "No"}</p>
                   <p style={{ margin: 6 }}><b>Notification Email:</b> {promoter?.bankDetails?.email || promoter?.email}</p>
-                  <p style={{ margin: 6 }}><b>Last Payment:</b> {promoter?.lastPayment || "-"}</p>
+                  <p style={{ margin: 6 }}><b>Last Payment:</b> {renderDate(promoter?.lastPayment)}</p>
                   <p style={{ margin: 6 }}><b>Last Paid Amount:</b> {promoter?.lastPaidAmount ? `₹${Number(promoter.lastPaidAmount).toLocaleString("en-IN")}` : "-"}</p>
                 </div>
               </div>
@@ -849,7 +1230,7 @@ export default function PromoterDashboard() {
                         <td style={styles.td}>{s.email}</td>
                         <td style={styles.td}>{s.classGrade || "-"}</td>
                         <td style={styles.td}>{s.syllabus || "-"}</td>
-                        <td style={styles.td}>₹{(parseFloat(s.commissionEarned || s.promoterCommission || 0) || 0).toFixed(2)}</td>
+                        <td style={styles.td}>₹{(Number(s.commissionEarned || s.promoterCommission || 0)).toFixed(2)}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -879,10 +1260,12 @@ export default function PromoterDashboard() {
               </div>
 
               <div style={styles.tableWrap}>
-                <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 900 }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 1000 }}>
                   <thead>
                     <tr style={{ background: "#f3f4f6" }}>
                       <th style={styles.th}>Student</th>
+                      <th style={styles.th}>Student ID</th>
+                      <th style={styles.th}>Payment ID</th>
                       <th style={styles.th}>Package</th>
                       <th style={styles.th}>Cost (₹)</th>
                       <th style={styles.th}>Commission %</th>
@@ -890,35 +1273,57 @@ export default function PromoterDashboard() {
                       <th style={styles.th}>Status</th>
                       <th style={styles.th}>Receipt</th>
                       <th style={styles.th}>Pay Cycle (Date)</th>
+                      <th style={styles.th}>Raw</th>
                     </tr>
                   </thead>
                   <tbody>
                     {commissionRows.length === 0 ? (
-                      <tr><td colSpan={8} style={{ textAlign: "center", padding: 14 }}>No commission records</td></tr>
+                      <tr><td colSpan={11} style={{ textAlign: "center", padding: 14 }}>No commission records</td></tr>
                     ) : commissionRows.map((r, i) => {
                       const cost = Number(r.packageCost || 0);
                       const perc = Number(r.commissionPercent || 0);
                       const commissionAmount = Number(r.commissionAmount || (isFinite(cost) ? (cost * perc) / 100 : 0));
                       const cycle = getNextPaymentCycleForDate(r.createdAt || new Date().toISOString());
                       return (
-                        <tr key={i}>
-                          <td style={styles.td}>{r.name || "—"}</td>
-                          <td style={styles.td}>{r.packageName || "—"}</td>
-                          <td style={styles.td}>₹{(cost || 0).toFixed(2)}</td>
-                          <td style={styles.td}>{(perc || 0)}%</td>
-                          <td style={styles.td}>₹{(commissionAmount || 0).toFixed(2)}</td>
-                          <td style={{ ...styles.td, color: r.commissionPaid ? "#16a34a" : "#eab308" }}>{r.commissionPaid ? "Paid" : "Pending"}</td>
-                          <td style={styles.td}>
-                            {r.receiptUrl ? (
-                              <a href={r.receiptUrl} target="_blank" rel="noreferrer" style={{ color: "#0ea5e9" }}>
-                                View Receipt
-                              </a>
-                            ) : (
-                              <span style={{ color: "#6b7280" }}>—</span>
-                            )}
-                          </td>
-                          <td style={styles.td}>{cycle ? cycle.toLocaleDateString() : "—"}</td>
-                        </tr>
+                        <React.Fragment key={i}>
+                          <tr>
+                            <td style={styles.td}>{r.name || "—"}</td>
+                            <td style={styles.td}>{r.studentId || "—"}</td>
+                            <td style={styles.td}>{r.paymentId || "—"}</td>
+                            <td style={styles.td}>{r.packageName || "—"}</td>
+                            <td style={styles.td}>₹{(cost || 0).toFixed(2)}</td>
+                            <td style={styles.td}>{(perc || 0)}%</td>
+                            <td style={styles.td}>₹{(commissionAmount || 0).toFixed(2)}</td>
+                            <td style={{ ...styles.td, color: r.commissionPaid ? "#16a34a" : "#eab308" }}>{r.commissionPaid ? "Paid" : "Pending"}</td>
+                            <td style={styles.td}>
+                              {r.receiptUrl ? (
+                                <a href={r.receiptUrl} target="_blank" rel="noreferrer" style={{ color: "#0ea5e9" }}>
+                                  View Receipt
+                                </a>
+                              ) : (
+                                <span style={{ color: "#6b7280" }}>—</span>
+                              )}
+                            </td>
+                            <td style={styles.td}>{cycle ? (cycle instanceof Date ? cycle.toLocaleDateString() : new Date(cycle).toLocaleDateString()) : "—"}</td>
+                            <td style={styles.td}>
+                              <button
+                                style={styles.smallBtn}
+                                onClick={() => setOpenRawPaymentId(openRawPaymentId === r.paymentId ? null : r.paymentId)}
+                              >
+                                {openRawPaymentId === r.paymentId ? "Hide" : "Show"}
+                              </button>
+                            </td>
+                          </tr>
+                          {openRawPaymentId === r.paymentId && (
+                            <tr>
+                              <td colSpan={11}>
+                                <div style={styles.rawBox}>
+                                  {JSON.stringify(r.raw || { paymentId: r.paymentId }, null, 2)}
+                                </div>
+                              </td>
+                            </tr>
+                          )}
+                        </React.Fragment>
                       );
                     })}
                   </tbody>
@@ -1009,7 +1414,7 @@ export default function PromoterDashboard() {
                         </>
                       )}
                       <div style={{ marginTop: 10 }}><b>Verified:</b> {promoter.bankDetails.verified ? <span style={{ color: "#16a34a" }}>Yes <FaCheckCircle /></span> : "No"}</div>
-                      <div style={{ marginTop: 8 }}><small style={{ color: "#6b7280" }}>Linked at: {promoter.bankDetails.linkedAt ? new Date(promoter.bankDetails.linkedAt).toLocaleString() : "—"}</small></div>
+                      <div style={{ marginTop: 8 }}><small style={{ color: "#6b7280" }}>Linked at: {renderDate(promoter.bankDetails.linkedAt)}</small></div>
                       <div style={{ marginTop: 8 }}><small style={{ color: "#6b7280" }}>Notification email: {promoter.bankDetails.email || promoter.email}</small></div>
                     </div>
                   ) : (

@@ -135,10 +135,11 @@ const StudentDashboard = () => {
               syllabus: data.syllabus || data.board || "",
               // support multiple common fields used for promoter-ref mapping
               mappedPromoter: data.mappedPromoter || data.promoterId || data.referralId || "",
+              phone: data.phone || user.phoneNumber || "",
             });
           } else {
             // Fallback if no user doc
-            setStudentInfo((s) => ({ ...s, name: user.displayName || "Student" }));
+            setStudentInfo((s) => ({ ...s, name: user.displayName || "Student", phone: user.phoneNumber || "" }));
           }
         } catch (err) {
           console.error("Error fetching user doc:", err);
@@ -252,11 +253,133 @@ const StudentDashboard = () => {
       }
       const q = query(collection(db, "payments"), where("studentId", "==", uid));
       const snapshot = await getDocs(q);
-      const list = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
+
+      // Helper to safely convert Firestore Timestamp -> ms / ISO
+      const tsToMs = (ts) => {
+        if (!ts) return null;
+        // Firestore Timestamp instance (has toMillis)
+        if (typeof ts.toMillis === "function") return ts.toMillis();
+        // Object with seconds field (raw)
+        if (typeof ts.seconds === "number") return ts.seconds * 1000;
+        // If number (ms)
+        if (typeof ts === "number") return ts;
+        // Date-like string
+        const d = new Date(ts);
+        if (!isNaN(d.getTime())) return d.getTime();
+        return null;
+      };
+
+      // Helper to convert an amount (possibly in paise) to rupees
+      const amountToRupees = (val) => {
+        if (val == null) return null;
+        const n = Number(val);
+        if (!Number.isFinite(n)) return null;
+        // Heuristic: treat round multiples of 100 as paise
+        if (n >= 100 && n % 100 === 0) return n / 100;
+        if (n >= 1000) return n / 100;
+        return n;
+      };
+
+      // Normalize each doc so UI never receives Timestamp objects
+      const normalizeDoc = (d) => {
+        const raw = d.data ? d.data() : d; // handle if already plain object
+        const normalized = { id: d.id || raw.id, ...raw };
+
+        // createdAt / paidAt -> create client-friendly fields
+        const createdMs = tsToMs(raw.createdAt);
+        const paidMs = tsToMs(raw.paidAt);
+
+        if (createdMs) {
+          normalized.createdAtClient = createdMs;
+          normalized.createdAtISO = new Date(createdMs).toISOString();
+        } else if (raw.createdAtClient) {
+          normalized.createdAtClient = Number(raw.createdAtClient) || null;
+        }
+
+        if (paidMs) {
+          normalized.paidAtClient = paidMs;
+          normalized.paidAtISO = new Date(paidMs).toISOString();
+        } else if (raw.paidAtClient) {
+          normalized.paidAtClient = Number(raw.paidAtClient) || null;
+        }
+
+        // Some docs might have nested packages array; ensure packageName and subject are strings
+        if (Array.isArray(raw.packages)) {
+          normalized.packages = raw.packages.map((pkg) => {
+            const safePkg = { ...pkg };
+            // convert any nested timestamps inside package (if present)
+            if (pkg.createdAt) {
+              const m = tsToMs(pkg.createdAt);
+              if (m) {
+                safePkg.createdAtClient = m;
+                safePkg.createdAtISO = new Date(m).toISOString();
+              }
+            }
+            // ensure fields that should be strings are strings
+            safePkg.packageName = typeof pkg.packageName === "string" ? pkg.packageName : (pkg.packageName ? String(pkg.packageName) : "");
+            safePkg.subject = typeof pkg.subject === "string" ? pkg.subject : (pkg.subject ? String(pkg.subject) : "");
+            safePkg.subtopic = typeof pkg.subtopic === "string" ? pkg.subtopic : (pkg.subtopic ? String(pkg.subtopic) : "");
+            safePkg.chapter = typeof pkg.chapter === "string" ? pkg.chapter : (pkg.chapter ? String(pkg.chapter) : "");
+            // normalize packageCost numeric
+            if (pkg.packageCost != null) safePkg.packageCost = Number(pkg.packageCost);
+            return safePkg;
+          });
+        } else {
+          // if single package stored as object, normalize keys
+          if (raw.packageName && !Array.isArray(raw.packageName)) {
+            normalized.packageName = typeof raw.packageName === "string" ? raw.packageName : String(raw.packageName);
+          }
+        }
+
+        // Ensure settlementStatus / paymentStatus are strings (guard)
+        if (normalized.settlementStatus && typeof normalized.settlementStatus !== "string") {
+          normalized.settlementStatus = String(normalized.settlementStatus);
+        }
+        if (normalized.paymentStatus && typeof normalized.paymentStatus !== "string") {
+          normalized.paymentStatus = String(normalized.paymentStatus);
+        }
+
+        // --- NEW: compute amount in rupees reliably ---
+        let amountR = null;
+        if (raw.amount != null) amountR = amountToRupees(raw.amount);
+        if (amountR == null && raw.totalAmount != null) amountR = amountToRupees(raw.totalAmount);
+        if (amountR == null && raw.totalPackageCost != null) amountR = amountToRupees(raw.totalPackageCost);
+        if (amountR == null && raw.packageCost != null) amountR = amountToRupees(raw.packageCost);
+        if (amountR == null && Array.isArray(raw.packages) && raw.packages.length > 0) {
+          const sumPc = raw.packages.reduce((s, pk) => s + (pk.packageCost != null ? Number(pk.packageCost) : 0), 0);
+          if (sumPc > 0) amountR = amountToRupees(sumPc);
+        }
+        if (amountR == null && raw.rawRazorpay && raw.rawRazorpay.amount != null) {
+          amountR = amountToRupees(raw.rawRazorpay.amount);
+        }
+        if (amountR == null && raw.paymentAmount != null) amountR = amountToRupees(raw.paymentAmount);
+
+        normalized.amountRupees = amountR != null ? Number(amountR) : null;
+
+        if (normalized.amountRupees != null) {
+          normalized.amount = Number(normalized.amountRupees);
+        } else if (raw.amount != null) {
+          normalized.amount = Number(raw.amount);
+        }
+
+        return normalized;
+      };
+
+      const list = snapshot.docs.map((d) => normalizeDoc(d));
       // Sort by createdAt or paidAt descending if available
       list.sort((a, b) => {
-        const ta = a.paidAt ? (a.paidAt.seconds ? a.paidAt.seconds * 1000 : new Date(a.paidAt).getTime()) : a.createdAt ? (a.createdAt.seconds ? a.createdAt.seconds * 1000 : new Date(a.createdAt).getTime()) : 0;
-        const tb = b.paidAt ? (b.paidAt.seconds ? b.paidAt.seconds * 1000 : new Date(b.paidAt).getTime()) : b.createdAt ? (b.createdAt.seconds ? b.createdAt.seconds * 1000 : new Date(b.createdAt).getTime()) : 0;
+        const ta =
+          a.paidAtClient || a.paidAtClient === 0
+            ? a.paidAtClient
+            : a.createdAtClient || a.createdAtClient === 0
+            ? a.createdAtClient
+            : 0;
+        const tb =
+          b.paidAtClient || b.paidAtClient === 0
+            ? b.paidAtClient
+            : b.createdAtClient || b.createdAtClient === 0
+            ? b.createdAtClient
+            : 0;
         return tb - ta;
       });
       setStudentReports(list);
@@ -356,32 +479,65 @@ const StudentDashboard = () => {
           const promoterResolved = await resolvePromoterInfo(mappedPromoter);
 
           // Build packagesPayload (shape expected by Cloud Function)
+          // KEY: commission must be calculated on actual package cost (use pkg.price as canonical actual cost)
           const packagesPayload = cart.map((pkg) => {
-            const pkgPrice = safeNum(pkg.totalPayable || pkg.price || pkg.packageCost || 0);
-            const commissionPercent = safeNum(pkg.commission ?? pkg.promoterCommission ?? pkg.commissionPercent ?? 0);
+            // actual package cost used for commission calculation:
+            // prefer explicit 'price' (MRP / actual cost) stored on package doc.
+            // fallback to totalPayable if price not present.
+            const packageActualCost = safeNum(pkg.price ?? pkg.packageCost ?? pkg.totalPayable ?? 0);
+
+            // what student actually paid for this package (if you charge per-package or proportionally)
+            // We'll use pkg.totalPayable if present, otherwise packageActualCost.
+            const paidPrice = safeNum(pkg.totalPayable ?? pkg.paidAmount ?? pkg.price ?? 0);
+
+            // commission percent stored on package doc (string or number)
+            const commissionPercent = safeNum(pkg.commission ?? pkg.promoterCommission ?? pkg.commissionPercent ?? pkg.commission_pct ?? 0);
+
+            // commission amount is calculated using packageActualCost (not student paid price)
+            const commissionAmount = Math.round(((packageActualCost * commissionPercent) / 100 + Number.EPSILON) * 100) / 100;
+
             return {
-              id: pkg.id,
+              id: pkg.id || null,
+              packageId: pkg.id || null,
               packageName: pkg.packageName || pkg.concept || "",
               subject: pkg.subject || "",
               subtopic: pkg.subtopic || "",
               chapter: pkg.chapter || "",
-              packageCost: Number(pkgPrice), // server code reads packageCost or price; include both
-              price: Number(pkgPrice),
-              commission: Number(commissionPercent), // percent number
-              studentName: studentInfo.name || "",
-              phone: studentInfo.phone || auth.currentUser?.phoneNumber || "",
+              // canonical package cost used for commission calculation
+              packageCost: Number(packageActualCost),
+              // what the student actually paid for this item (could be discounted)
+              paidPrice: Number(paidPrice),
+              // commission details read from package
+              commissionPercent: Number(commissionPercent),
+              commissionAmount: Number(commissionAmount),
+              // keep legacy fields too so UI continues to work
+              price: Number(pkg.price ?? 0),
+              totalPayable: Number(pkg.totalPayable ?? 0),
             };
           });
 
-          const commissionTotal = packagesPayload.reduce((s, p) => s + safeNum((p.price * p.commission) / 100), 0);
+          // commissionTotal calculated from packageCost (as requested)
+          const commissionTotal = packagesPayload.reduce((s, p) => s + safeNum(p.commissionAmount), 0);
+
+          // total package cost (sum of canonical package costs) — useful to admins
+          const packageTotalCost = packagesPayload.reduce((s, p) => s + safeNum(p.packageCost), 0);
 
           // Build final payload (shape accepted by createPaymentRecord Cloud Function)
           const callablePayload = {
             paymentId: response.razorpay_payment_id,
             packages: packagesPayload,
+            // what student actually paid (sum of paidPrice or cartTotal)
+            paidAmount: Number(cartTotal),
+            amount: Number(cartTotal),
             totalAmount: Number(cartTotal),
+            packageTotalCost: Number(packageTotalCost),
+            commissionTotal: Number(Math.round((commissionTotal + Number.EPSILON) * 100) / 100),
             mappedPromoter: studentInfo.mappedPromoter || null, // pass uniqueId or uid if set on user doc
+            promoterUid: promoterResolved?.promoterUid || null,
+            promoterUniqueId: promoterResolved?.promoterUniqueId || null,
+            promoterName: promoterResolved?.promoterName || null,
             createPerPackage: false,
+            source: "razorpay_checkout_client",
           };
 
           // Try callables (prefer server-side logic)
@@ -444,19 +600,21 @@ const StudentDashboard = () => {
                 studentId: auth.currentUser?.uid,
                 studentName: studentInfo.name || "",
                 email: auth.currentUser?.email || "",
-                phone: studentInfo.phone || "",
+                phone: studentInfo.phone || auth.currentUser?.phoneNumber || "",
                 packages: packagesPayload,
                 amount: Number(cartTotal),
+                paidAmount: Number(cartTotal),
                 paymentId: response.razorpay_payment_id,
                 paymentMethod: "razorpay",
-                status: "paid",
+                paymentStatus: "paid",
                 settlementStatus: "pending",
                 promoterUid: promoterResolved?.promoterUid || null,
                 promoterUniqueId: promoterResolved?.promoterUniqueId || null,
                 promoterName: promoterResolved?.promoterName || null,
-                commissionTotal,
+                commissionTotal: Number(Math.round((commissionTotal + Number.EPSILON) * 100) / 100),
                 commissionPaid: false,
                 promoterPaid: false,
+                packageTotalCost: Number(packageTotalCost),
                 createdAt: serverTimestamp(),
                 paidAt: serverTimestamp(),
                 source: "razorpay_checkout_client_fallback",
@@ -661,10 +819,16 @@ const StudentDashboard = () => {
                   <tbody>
                     {studentReports.map((r) => (
                       <tr key={r.id} style={{ borderBottom: "1px solid rgba(255,255,255,0.04)" }}>
-                        <td style={{ padding: "10px 6px", color: "#e6eef8" }}>{r.packages && r.packages.length ? r.packages.map(p => p.packageName).join(", ") : r.packageName || "—"}</td>
+                        <td style={{ padding: "10px 6px", color: "#e6eef8" }}>
+                          {r.packages && r.packages.length ? r.packages.map(p => (typeof p.packageName === "string" ? p.packageName : String(p.packageName))).join(", ") : r.packageName || "—"}
+                        </td>
                         <td style={{ padding: "10px 6px", color: "#e6eef8" }}>{r.subject || (r.packages && r.packages[0]?.subject) || "—"}</td>
-                        <td style={{ padding: "10px 6px", color: "#e6eef8", fontWeight: 700 }}>{Number(r.amount || r.totalPackageCost || 0).toFixed(2)}</td>
-                        <td style={{ padding: "10px 6px", color: "#e6eef8" }}>{r.paidAt ? (r.paidAt.seconds ? new Date(r.paidAt.seconds * 1000).toLocaleString("en-IN") : new Date(r.paidAt).toLocaleString("en-IN")) : r.createdAtClient ? new Date(r.createdAtClient).toLocaleString("en-IN") : "—"}</td>
+                        <td style={{ padding: "10px 6px", color: "#e6eef8", fontWeight: 700 }}>
+                          {Number(r.amountRupees != null ? r.amountRupees : (r.amount != null ? r.amount : r.totalPackageCost || r.paidAmount || 0)).toFixed(2)}
+                        </td>
+                        <td style={{ padding: "10px 6px", color: "#e6eef8" }}>
+                          {r.paidAtClient ? new Date(r.paidAtClient).toLocaleString("en-IN") : r.paidAt ? (r.paidAt.seconds ? new Date(r.paidAt.seconds * 1000).toLocaleString("en-IN") : (new Date(r.paidAt).toLocaleString("en-IN"))) : r.createdAtClient ? new Date(r.createdAtClient).toLocaleString("en-IN") : "—"}
+                        </td>
                         <td style={{ padding: "10px 6px", color: r.settlementStatus === "settled" ? "#bbf7d0" : "#fda4af", fontWeight: 700 }}>{r.settlementStatus || r.paymentStatus || "—"}</td>
                         <td style={{ padding: "10px 6px", color: "#e6eef8" }}>{r.promoterApproved ? "✅" : (r.promoterUid || r.promoterUniqueId ? "❌" : "—")}</td>
                         <td style={{ padding: "10px 6px", color: "#e6eef8", fontSize: 12 }}>{r.paymentId || r.paymentID || r.id || "—"}</td>
