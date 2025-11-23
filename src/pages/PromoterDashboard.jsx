@@ -359,25 +359,176 @@ export default function PromoterDashboard() {
    *
    * commissionPercent is pulled primarily from package master (pkgs param) by id or by packageName. Falls back to fields on package/payment.
    */
+
+  // Improved package master finder with heuristics (id, name, price)
+  const findPackageMasterCommission = (pkgIdOrName, pkgMaybe) => {
+    if (!packages || !Array.isArray(packages)) return null;
+    // try by id first
+    const byId = packages.find((x) => x.id === pkgIdOrName);
+    if (byId) return byId;
+    // try by packageName (case-insensitive)
+    const byName = packages.find((x) => (x.packageName || "").toLowerCase() === (pkgIdOrName || "").toLowerCase());
+    if (byName) return byName;
+
+    // Additional heuristics: try matching by name similarity (loose), price, or rounded price
+    try {
+      // loose name match: substring or token overlap
+      if (pkgIdOrName && typeof pkgIdOrName === "string") {
+        const target = pkgIdOrName.toLowerCase().trim();
+        const byLooseName = packages.find((x) => {
+          const xn = (x.packageName || "").toLowerCase();
+          if (!xn) return false;
+          if (xn === target) return true;
+          if (xn.includes(target) || target.includes(xn)) return true;
+          // token overlap
+          const atokens = target.split(/\s+/).filter(Boolean);
+          const xtokens = xn.split(/\s+/).filter(Boolean);
+          return atokens.some((t) => xtokens.includes(t));
+        });
+        if (byLooseName) return byLooseName;
+      }
+
+      // match by price (packageCost/price/totalPayable)
+      const cost = Number(pkgMaybe?.packageCost ?? pkgMaybe?.price ?? pkgMaybe?.package_cost ?? pkgMaybe?.totalPayable ?? 0);
+      if (cost && isFinite(cost) && Math.abs(cost) > 0) {
+        // exact price match
+        const byPriceExact = packages.find((x) => {
+          const pCost = Number(x.packageCost ?? x.price ?? x.totalPayable ?? 0);
+          return isFinite(pCost) && Math.abs(pCost - cost) < 0.0001;
+        });
+        if (byPriceExact) return byPriceExact;
+
+        // within small tolerance
+        const tolerance = Math.max(0.5, Math.round(Math.abs(cost) * 0.01)); // 1% or min 0.5 rupee
+        const byPriceTol = packages.find((x) => {
+          const pCost = Number(x.packageCost ?? x.price ?? x.totalPayable ?? 0);
+          return isFinite(pCost) && Math.abs(pCost - cost) <= tolerance;
+        });
+        if (byPriceTol) return byPriceTol;
+
+        // rounded price match
+        const byRound = packages.find((x) => {
+          const pCost = Number(x.packageCost ?? x.price ?? x.totalPayable ?? 0);
+          return isFinite(pCost) && Math.round(pCost) === Math.round(cost);
+        });
+        if (byRound) return byRound;
+      }
+    } catch (e) {
+      // ignore heuristic failures
+    }
+
+    return null;
+  };
+
+  // --- NEW helper: fetch users by ids (batch getDoc)
+  const fetchUsersByIds = async (ids = []) => {
+    const map = {};
+    if (!Array.isArray(ids) || ids.length === 0) return map;
+    // limit to unique ids
+    const uniq = Array.from(new Set(ids.filter(Boolean)));
+    // batch get
+    await Promise.all(
+      uniq.map(async (id) => {
+        try {
+          const uDoc = await getDoc(doc(db, "users", id));
+          if (uDoc.exists()) {
+            const d = uDoc.data() || {};
+            map[id] = { name: d.name || d.displayName || d.studentName || d.email || null, email: d.email || null, phone: d.phone || null };
+          }
+        } catch (e) {
+          // ignore per-id errors
+        }
+      })
+    );
+    return map;
+  };
+
   function buildRowsFromPayments(paymentsList, finalStudents, pkgs) {
     const rows = [];
 
-    const findPackageMasterCommission = (pkgIdOrName) => {
-      if (!pkgs || !Array.isArray(pkgs)) return null;
-      // try by id first
-      const byId = pkgs.find((x) => x.id === pkgIdOrName);
-      if (byId) return byId;
-      // try by packageName (case-insensitive)
-      const byName = pkgs.find((x) => (x.packageName || "").toLowerCase() === (pkgIdOrName || "").toLowerCase());
-      if (byName) return byName;
-      return null;
+    const findPackageMasterCommissionLocal = (pkgIdOrName, pkgMaybe) => {
+      // prefer runtime packages state (this function has access to outer 'packages' too)
+      if (pkgs && Array.isArray(pkgs) && pkgs.length > 0) {
+        // try by id
+        const byId = pkgs.find((x) => x.id === pkgIdOrName);
+        if (byId) return byId;
+        const byName = pkgs.find((x) => (x.packageName || "").toLowerCase() === (pkgIdOrName || "").toLowerCase());
+        if (byName) return byName;
+        // fallback to the global heuristic if provided
+      }
+      // fallback to component-level heuristic
+      return findPackageMasterCommission(pkgIdOrName, pkgMaybe);
     };
 
     const getCanonicalStudent = (payment) => {
       return finalStudents.find((st) => st.id === payment.studentId) || { name: payment.studentName || "Student", id: payment.studentId };
     };
 
+    // NEW: try to find student name from finalStudents (id/email/phone/paymentId) or payment fields
+    const findStudentName = (payment) => {
+      // 1) direct id match
+      if (payment.studentId) {
+        const byId = finalStudents.find((s) => String(s.id) === String(payment.studentId));
+        if (byId && (byId.name || byId.studentName)) return byId.name || byId.studentName;
+      }
+      // 2) if payment has studentName already set by earlier resolver
+      if (payment.studentName && String(payment.studentName).trim() !== "") return String(payment.studentName);
+      // 3) match by email
+      const email = payment.email || payment.studentEmail || (payment.rawRazorpay && payment.rawRazorpay.email) || (payment.raw && payment.raw.email);
+      if (email) {
+        const byEmail = finalStudents.find((s) => {
+          const se = s.email || s.studentEmail || null;
+          return se && String(se).toLowerCase() === String(email).toLowerCase();
+        });
+        if (byEmail && (byEmail.name || byEmail.studentName)) return byEmail.name || byEmail.studentName;
+      }
+      // 4) match by phone
+      const phone = payment.phone || payment.studentPhone || (payment.rawRazorpay && payment.rawRazorpay.contact) || (payment.raw && payment.raw.contact);
+      if (phone) {
+        const byPhone = finalStudents.find((s) => {
+          const sp = s.phone || s.contact || s.mobile || null;
+          if (!sp) return false;
+          return String(sp).replace(/\D/g, "") === String(phone).replace(/\D/g, "");
+        });
+        if (byPhone && (byPhone.name || byPhone.studentName)) return byPhone.name || byPhone.studentName;
+      }
+      // 5) match by paymentId stored in student records (some setups)
+      if (payment.paymentId) {
+        const byPayRef = finalStudents.find((s) => {
+          if (!s.payments && !s.lastPaymentId && !s.paymentId) return false;
+          const checks = [];
+          if (Array.isArray(s.payments)) checks.push(...s.payments.map(p => p.paymentId || p.id).filter(Boolean));
+          if (s.lastPaymentId) checks.push(s.lastPaymentId);
+          if (s.paymentId) checks.push(s.paymentId);
+          return checks.some(c => c && String(c) === String(payment.paymentId));
+        });
+        if (byPayRef && (byPayRef.name || byPayRef.studentName)) return byPayRef.name || byPayRef.studentName;
+      }
+      // 6) fallbacks — rawRazorpay contact/email or payment.raw contact/email
+      if (payment.rawRazorpay) {
+        const rr = payment.rawRazorpay;
+        if (rr.contact) return rr.contact;
+        if (rr.email) return rr.email;
+      }
+      if (payment.raw) {
+        const r = payment.raw;
+        if (r.contact) return r.contact;
+        if (r.email) return r.email;
+      }
+      // 7) any email/phone we have
+      if (email) return email;
+      if (phone) return phone;
+      // last fallback: studentId or paymentId or generic label
+      if (payment.studentId) return `Student (${payment.studentId})`;
+      if (payment.paymentId) return `Student (${payment.paymentId})`;
+      return "Student";
+    };
+
     paymentsList.forEach((payment) => {
+      // normalize a few keys to make downstream easier
+      payment.studentId = payment.studentId || payment.student_id || payment.student || null;
+      payment.paymentId = payment.paymentId || payment.id || null;
+
       // Some payments include a packages array (preferred). If present, expand each package into its own row.
       const packagesArray = Array.isArray(payment.packages) && payment.packages.length > 0 ? payment.packages : null;
 
@@ -391,7 +542,7 @@ export default function PromoterDashboard() {
 
           // Find master package doc to read commission percent if available
           let commissionPercent = 0;
-          const pkgMaster = findPackageMasterCommission(pkgEntry.id ?? pkgEntry.packageId ?? pkgEntry.packageIdString ?? pkgEntry.packageIdRaw ?? pkgEntry.packageName);
+          const pkgMaster = findPackageMasterCommissionLocal(pkgEntry.id ?? pkgEntry.packageId ?? pkgEntry.packageName, pkgEntry);
           if (pkgMaster) {
             commissionPercent = safeParseFloat(pkgMaster.commission ?? pkgMaster.promoterCommission ?? pkgMaster.commissionPercent ?? pkgMaster.commission_pct ?? 0);
           }
@@ -417,13 +568,23 @@ export default function PromoterDashboard() {
           } else if (isFinite(packageCost) && commissionPercent > 0) {
             commissionAmount = (Number(packageCost) * Number(commissionPercent)) / 100;
           } else {
-            commissionAmount = 0;
+            // final fallback: try to infer commissionPercent from global package master using only packageCost
+            if ((!commissionAmount || commissionAmount === 0) && packageCost > 0) {
+              const masterByCost = findPackageMasterCommissionLocal(null, { packageCost });
+              if (masterByCost) {
+                const mp = safeParseFloat(masterByCost.commission ?? masterByCost.promoterCommission ?? masterByCost.commissionPercent ?? masterByCost.commission_pct ?? 0);
+                if (mp > 0) {
+                  commissionAmount = (Number(packageCost) * Number(mp)) / 100;
+                  commissionPercent = Number(mp);
+                }
+              }
+            }
           }
 
           commissionAmount = Math.round((Number(commissionAmount) + Number.EPSILON) * 100) / 100;
 
-          const studentObj = getCanonicalStudent(payment);
-          const displayName = studentObj?.name || payment.studentName || payment.student_name || payment.rawRazorpay?.contact || payment.raw?.contact || payment.email || "";
+          // NEW: resolve name robustly
+          const displayName = findStudentName(payment);
 
           rows.push({
             name: displayName || `Student (${payment.studentId || "?"})`,
@@ -457,7 +618,7 @@ export default function PromoterDashboard() {
 
         // master lookup
         let commissionPercent = 0;
-        const pkgMaster = findPackageMasterCommission(payment.packageId ?? payment.packageIdString ?? payment.packageName ?? payment.package);
+        const pkgMaster = findPackageMasterCommissionLocal(payment.packageId ?? payment.packageIdString ?? payment.packageName ?? payment.package);
         if (pkgMaster) {
           commissionPercent = safeParseFloat(pkgMaster.commission ?? pkgMaster.promoterCommission ?? pkgMaster.commissionPercent ?? pkgMaster.commission_pct ?? 0);
         }
@@ -479,13 +640,23 @@ export default function PromoterDashboard() {
         } else if (isFinite(packageCost) && commissionPercent > 0) {
           commissionAmount = (Number(packageCost) * Number(commissionPercent)) / 100;
         } else {
-          commissionAmount = 0;
+          // fallback: try to infer from master by cost
+          if ((!commissionAmount || commissionAmount === 0) && packageCost > 0) {
+            const masterByCost = findPackageMasterCommissionLocal(null, { packageCost });
+            if (masterByCost) {
+              const mp = safeParseFloat(masterByCost.commission ?? masterByCost.promoterCommission ?? masterByCost.commissionPercent ?? masterByCost.commission_pct ?? 0);
+              if (mp > 0) {
+                commissionAmount = (Number(packageCost) * Number(mp)) / 100;
+                commissionPercent = Number(mp);
+              }
+            }
+          }
         }
 
         commissionAmount = Math.round((Number(commissionAmount) + Number.EPSILON) * 100) / 100;
 
-        const studentObj = getCanonicalStudent(payment);
-        const displayName = studentObj?.name || payment.studentName || payment.student_name || payment.rawRazorpay?.contact || payment.raw?.contact || payment.email || "";
+        // NEW: resolve name robustly
+        const displayName = findStudentName(payment);
 
         rows.push({
           name: displayName || `Student (${payment.studentId || "?"})`,
@@ -838,31 +1009,60 @@ export default function PromoterDashboard() {
           }
         }
 
-        // If payment list has entries missing studentName, try to resolve them
+        // --- NEW: eager user lookup for student names when payments are present ---
         if (paymentsList.length > 0) {
-          const idToName = await fetchStudentNamesForPayments(paymentsList);
-          paymentsList = paymentsList.map((p) => {
-            // unify common variants
-            p.studentId = p.studentId || p.student_id || p.student || null;
-            p.paymentId = p.paymentId || p.id || null;
-
-            if ((!p.studentName || p.studentName === null || p.studentName === "")) {
-              const resolved = (p.studentId && idToName[p.studentId]) || idToName[`payment:${p.paymentId}`];
-              const fallbackFromRazor = (p.rawRazorpay && (p.rawRazorpay.contact || p.rawRazorpay.email)) || null;
-              const fallbackEmail = p.email || p.studentEmail || (p.raw && p.raw.email) || null;
-              const fallbackPhone = p.phone || p.studentPhone || (p.raw && p.raw.contact) || null;
-              p.studentName = resolved || fallbackFromRazor || fallbackEmail || fallbackPhone || p.studentName || "";
+          try {
+            // collect studentIds present in payments
+            const paymentStudentIds = Array.from(new Set(paymentsList.map((p) => p.studentId).filter(Boolean)));
+            if (paymentStudentIds.length > 0) {
+              const usersMap = await fetchUsersByIds(paymentStudentIds);
+              // apply names where available
+              paymentsList = paymentsList.map((p) => {
+                if ((!p.studentName || p.studentName === null || p.studentName === "") && p.studentId && usersMap[p.studentId]) {
+                  p.studentName = usersMap[p.studentId].name || usersMap[p.studentId].email || usersMap[p.studentId].phone || "";
+                }
+                // normalize packageCost if missing
+                if ((p.packageCost === undefined || p.packageCost === null || p.packageCost === 0)) {
+                  p.packageCost = parseMoneyFromPayment(p);
+                }
+                return p;
+              });
             }
+          } catch (e) {
+            // swallow — not fatal
+            console.warn("User batch lookup failed:", e);
+          }
+        }
 
-            // normalize packageCost if missing
-            if ((p.packageCost === undefined || p.packageCost === null || p.packageCost === 0) ) {
-              p.packageCost = parseMoneyFromPayment(p);
-            }
+        // If payment list has entries missing studentName, try to resolve them via existing fallback resolver
+        if (paymentsList.length > 0) {
+          const paymentsMissingName = paymentsList.filter((p) => !p.studentName || p.studentName === "");
+          if (paymentsMissingName.length > 0) {
+            const idToName = await fetchStudentNamesForPayments(paymentsList);
+            paymentsList = paymentsList.map((p) => {
+              p.studentId = p.studentId || p.student_id || p.student || null;
+              p.paymentId = p.paymentId || p.id || null;
 
-            return p;
-          });
+              if ((!p.studentName || p.studentName === null || p.studentName === "")) {
+                const resolved = (p.studentId && idToName[p.studentId]) || idToName[`payment:${p.paymentId}`];
+                const fallbackFromRazor = (p.rawRazorpay && (p.rawRazorpay.contact || p.rawRazorpay.email)) || null;
+                const fallbackEmail = p.email || p.studentEmail || (p.raw && p.raw.email) || null;
+                const fallbackPhone = p.phone || p.studentPhone || (p.raw && p.raw.contact) || null;
+                p.studentName = resolved || fallbackFromRazor || fallbackEmail || fallbackPhone || p.studentName || "";
+              }
 
-          // Quick check: log any payment where studentName not resolved OR commission anomalies
+              // normalize packageCost if missing
+              if ((p.packageCost === undefined || p.packageCost === null || p.packageCost === 0) ) {
+                p.packageCost = parseMoneyFromPayment(p);
+              }
+
+              return p;
+            });
+          }
+        }
+
+        // Quick check: log any payment where studentName not resolved OR commission anomalies
+        if (paymentsList.length > 0) {
           const suspicious = paymentsList.filter((p) => {
             const hasExplicitComm = safeParseFloat(p.commissionAmount || p.commissionTotal || p.commission_total || 0);
             const commVal = safeParseFloat(p.commissionAmount || p.commissionTotal || p.commission_total || 0);

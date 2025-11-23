@@ -478,41 +478,72 @@ const StudentDashboard = () => {
           const mappedPromoter = studentInfo.mappedPromoter || null;
           const promoterResolved = await resolvePromoterInfo(mappedPromoter);
 
-          // Build packagesPayload (shape expected by Cloud Function)
-          // KEY: commission must be calculated on actual package cost (use pkg.price as canonical actual cost)
+          // --- robust package payload builder (replacement) ---
+          const amountToRupees = (val) => {
+            if (val == null) return 0;
+            const n = Number(val);
+            if (!Number.isFinite(n)) return 0;
+            // heuristics: treat multiples of 100 or >=1000 as paise
+            if (Math.abs(n) >= 1000) return n / 100;
+            if (Math.abs(n) >= 100 && n % 100 === 0) return n / 100;
+            return n;
+          };
+
           const packagesPayload = cart.map((pkg) => {
-            // actual package cost used for commission calculation:
-            // prefer explicit 'price' (MRP / actual cost) stored on package doc.
-            // fallback to totalPayable if price not present.
-            const packageActualCost = safeNum(pkg.price ?? pkg.packageCost ?? pkg.totalPayable ?? 0);
+            // canonical package cost used for commission calculation:
+            const rawPackageCost =
+              pkg.packageCost ?? pkg.price ?? pkg.totalPayable ?? pkg.amount ?? pkg.mrp ?? 0;
+            const packageActualCost = Number(amountToRupees(rawPackageCost));
 
-            // what student actually paid for this package (if you charge per-package or proportionally)
-            // We'll use pkg.totalPayable if present, otherwise packageActualCost.
-            const paidPrice = safeNum(pkg.totalPayable ?? pkg.paidAmount ?? pkg.price ?? 0);
+            // what student actually paid for this package (could be discounted)
+            const rawPaid = pkg.totalPayable ?? pkg.paidAmount ?? pkg.price ?? pkg.amount ?? 0;
+            const paidPrice = Number(amountToRupees(rawPaid || 0));
 
-            // commission percent stored on package doc (string or number)
-            const commissionPercent = safeNum(pkg.commission ?? pkg.promoterCommission ?? pkg.commissionPercent ?? pkg.commission_pct ?? 0);
+            // commission percent stored on package doc (try multiple field names)
+            const commissionPercent = safeNum(
+              pkg.commission ??
+              pkg.promoterCommission ??
+              pkg.commissionPercent ??
+              pkg.commission_pct ??
+              pkg.promoter_commission_percent ??
+              0
+            );
 
-            // commission amount is calculated using packageActualCost (not student paid price)
-            const commissionAmount = Math.round(((packageActualCost * commissionPercent) / 100 + Number.EPSILON) * 100) / 100;
+            // explicit commission amount if package stored it (handle paise)
+            let explicitCommissionAmount =
+              pkg.commissionAmount ?? pkg.commission_total ?? pkg.commissionTotal ?? pkg.promoterCommissionAmount ?? 0;
+            explicitCommissionAmount = Number(explicitCommissionAmount || 0);
+            if (explicitCommissionAmount >= 100 && packageActualCost < 100) {
+              explicitCommissionAmount = explicitCommissionAmount / 100;
+            }
+
+            // final commission amount: explicit takes precedence, else computed from packageActualCost * percent
+            let commissionAmount = 0;
+            if (explicitCommissionAmount > 0) {
+              commissionAmount = Number(Math.round((explicitCommissionAmount + Number.EPSILON) * 100) / 100);
+            } else if (packageActualCost > 0 && commissionPercent > 0) {
+              commissionAmount = Number(Math.round(((packageActualCost * commissionPercent) / 100 + Number.EPSILON) * 100) / 100);
+            } else {
+              commissionAmount = 0;
+            }
 
             return {
               id: pkg.id || null,
               packageId: pkg.id || null,
-              packageName: pkg.packageName || pkg.concept || "",
+              packageName: pkg.packageName || pkg.concept || pkg.name || "",
               subject: pkg.subject || "",
               subtopic: pkg.subtopic || "",
               chapter: pkg.chapter || "",
-              // canonical package cost used for commission calculation
-              packageCost: Number(packageActualCost),
-              // what the student actually paid for this item (could be discounted)
-              paidPrice: Number(paidPrice),
-              // commission details read from package
-              commissionPercent: Number(commissionPercent),
-              commissionAmount: Number(commissionAmount),
-              // keep legacy fields too so UI continues to work
-              price: Number(pkg.price ?? 0),
-              totalPayable: Number(pkg.totalPayable ?? 0),
+              // canonical package cost used for commission calculation (in rupees)
+              packageCost: Number(packageActualCost || 0),
+              // what the student actually paid for this item (in rupees)
+              paidPrice: Number(paidPrice || 0),
+              // commission details read from package (percent + amount)
+              commissionPercent: Number(commissionPercent || 0),
+              commissionAmount: Number(commissionAmount || 0),
+              // legacy fields kept
+              price: Number(amountToRupees(pkg.price ?? pkg.packageCost ?? pkg.totalPayable ?? 0)),
+              totalPayable: Number(amountToRupees(pkg.totalPayable ?? pkg.paidAmount ?? pkg.price ?? 0)),
             };
           });
 
@@ -538,6 +569,12 @@ const StudentDashboard = () => {
             promoterName: promoterResolved?.promoterName || null,
             createPerPackage: false,
             source: "razorpay_checkout_client",
+
+            // --- NEW: include student contact info so server can generate & send receipt automatically ---
+            studentId: auth.currentUser?.uid || null,
+            studentName: studentInfo.name || "",
+            studentEmail: auth.currentUser?.email || "",
+            studentPhone: studentInfo.phone || auth.currentUser?.phoneNumber || "",
           };
 
           // Try callables (prefer server-side logic)
@@ -596,7 +633,8 @@ const StudentDashboard = () => {
           if (!saved) {
             try {
               // We will store one document that contains the full payload (packages array inside)
-              const pRef = await addDoc(collection(db, "payments"), {
+              // Build fallback payload and include legacy single-package top-level fields when cart has 1 item
+              const fallbackDocPayload = {
                 studentId: auth.currentUser?.uid,
                 studentName: studentInfo.name || "",
                 email: auth.currentUser?.email || "",
@@ -619,7 +657,19 @@ const StudentDashboard = () => {
                 paidAt: serverTimestamp(),
                 source: "razorpay_checkout_client_fallback",
                 gatewayRaw: { raw: response },
-              });
+              };
+
+              // if only one package, set legacy top-level package fields to help older dashboards
+              if (packagesPayload.length === 1) {
+                const p0 = packagesPayload[0];
+                fallbackDocPayload.packageId = p0.packageId || p0.id || null;
+                fallbackDocPayload.packageName = p0.packageName || null;
+                fallbackDocPayload.packageCost = p0.packageCost || null;
+                fallbackDocPayload.commissionPercent = p0.commissionPercent || null;
+                fallbackDocPayload.commissionAmount = p0.commissionAmount || null;
+              }
+
+              const pRef = await addDoc(collection(db, "payments"), fallbackDocPayload);
               console.log("Fallback: saved payments doc client-side:", pRef.id);
               saved = true;
               savedPaymentDocId = pRef.id;
@@ -643,7 +693,18 @@ const StudentDashboard = () => {
 
           // If saved, attempt to trigger receipt generation (server should email + whatsapp)
           try {
-            const receiptRes = await sendReceiptToServer({ paymentDocId: savedPaymentDocId, paymentPayload: { ...callablePayload, savedPaymentDocId } });
+            // ensure payload we send includes student contact info
+            const payloadForReceipt = {
+              ...callablePayload,
+              savedPaymentDocId,
+              // also pass canonical fallback fields if need be
+              studentId: auth.currentUser?.uid || null,
+              studentName: studentInfo.name || "",
+              studentEmail: auth.currentUser?.email || "",
+              studentPhone: studentInfo.phone || auth.currentUser?.phoneNumber || "",
+              paymentDocId: savedPaymentDocId,
+            };
+            const receiptRes = await sendReceiptToServer({ paymentDocId: savedPaymentDocId, paymentPayload: payloadForReceipt });
             console.log("sendReceiptToServer result:", receiptRes);
           } catch (e) {
             console.warn("Receipt sending attempt failed:", e);
