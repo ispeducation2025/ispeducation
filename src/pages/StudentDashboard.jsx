@@ -92,7 +92,7 @@ const StudentDashboard = () => {
   const [studentReports, setStudentReports] = useState([]);
   const [loadingReports, setLoadingReports] = useState(false);
 
-  // New: mobile cart overlay visibility
+  // Mobile cart visibility
   const [showMobileCart, setShowMobileCart] = useState(false);
 
   const functions = useMemo(() => getFunctionsInstance(), []);
@@ -109,10 +109,8 @@ const StudentDashboard = () => {
     };
   }, []);
 
-  // Ensure the gradient stays visible on mobile when scrolling by pinning background
+  // Ensure gradient stays visible on mobile (prevents white gap while scrolling)
   useEffect(() => {
-    // set background-attachment fixed on the root element to avoid white gaps during mobile scroll
-    // NOTE: we don't mutate body permanently; clean up on unmount
     const prev = document.body.style.backgroundAttachment;
     const prevBg = document.body.style.background;
     document.body.style.backgroundAttachment = "fixed";
@@ -223,12 +221,10 @@ const StudentDashboard = () => {
 
   const addToCart = (pkg) => {
     if (!cart.find((p) => p.id === pkg.id)) setCart((c) => [...c, pkg]);
-    // when user adds to cart on mobile, show the mobile cart indicator
     if (window.innerWidth <= 900) setShowMobileCart(true);
   };
   const removeFromCart = (id) => setCart((c) => c.filter((p) => p.id !== id));
   const cartTotal = useMemo(() => {
-    // prefer pkg.totalPayable if present else compute from price minus discounts (we'll compute consistently on checkout)
     const total = cart.reduce((sum, p) => {
       const v = Number(p.totalPayable ?? p.paidAmount ?? p.price ?? p.packageCost ?? 0);
       return sum + (Number.isFinite(v) ? v : 0);
@@ -271,7 +267,6 @@ const StudentDashboard = () => {
         if (val == null) return null;
         const n = Number(val);
         if (!Number.isFinite(n)) return null;
-        // Heuristic: treat paise when number is >=1000 or divisible by 100 with no decimals
         if (Math.abs(n) >= 1000) return n / 100;
         if (Math.abs(n) >= 100 && n % 100 === 0) return n / 100;
         return n;
@@ -298,7 +293,6 @@ const StudentDashboard = () => {
           normalized.paidAtClient = Number(raw.paidAtClient) || null;
         }
 
-        // Normalize packages array and inner fields
         if (Array.isArray(raw.packages)) {
           normalized.packages = raw.packages.map((pkg) => {
             const safePkg = { ...pkg };
@@ -313,12 +307,10 @@ const StudentDashboard = () => {
             safePkg.subject = typeof pkg.subject === "string" ? pkg.subject : (pkg.subject ? String(pkg.subject) : "");
             safePkg.subtopic = typeof pkg.subtopic === "string" ? pkg.subtopic : (pkg.subtopic ? String(pkg.subtopic) : "");
             safePkg.chapter = typeof pkg.chapter === "string" ? pkg.chapter : (pkg.chapter ? String(pkg.chapter) : "");
-            // numeric conversions if present
             if (pkg.packageCost != null) safePkg.packageCost = Number(pkg.packageCost);
             if (pkg.price != null) safePkg.price = Number(pkg.price);
             if (pkg.totalPayable != null) safePkg.totalPayable = Number(pkg.totalPayable);
             if (pkg.discountAmount != null) safePkg.discountAmount = Number(pkg.discountAmount);
-            // best-effort paidPrice for package
             safePkg.paidPrice =
               (pkg.paidPrice != null ? Number(pkg.paidPrice) : null) ??
               (pkg.paidAmount != null ? Number(pkg.paidAmount) : null) ??
@@ -341,34 +333,28 @@ const StudentDashboard = () => {
           normalized.paymentStatus = String(normalized.paymentStatus);
         }
 
-        // --- PRIORITIZE actual paid amount (rawRazorpay, paidAmount, paymentAmount, amount) ---
         let amountR = null;
 
-        // 1) rawRazorpay.amount (Razorpay sends paise often)
         if (raw.rawRazorpay && raw.rawRazorpay.amount != null) {
           const v = amountToRupees(raw.rawRazorpay.amount);
           if (v != null) amountR = v;
         }
 
-        // 2) explicit paidAmount field
         if (amountR == null && raw.paidAmount != null) {
           const v = amountToRupees(raw.paidAmount);
           if (v != null) amountR = v;
         }
 
-        // 3) paymentAmount (alternate naming)
         if (amountR == null && raw.paymentAmount != null) {
           const v = amountToRupees(raw.paymentAmount);
           if (v != null) amountR = v;
         }
 
-        // 4) amount/top-level numeric
         if (amountR == null && raw.amount != null) {
           const v = amountToRupees(raw.amount);
           if (v != null) amountR = v;
         }
 
-        // 5) If not found above, try summing paid values inside packages (preferred over packageCost)
         if (amountR == null && Array.isArray(raw.packages) && raw.packages.length > 0) {
           const sumPaid = raw.packages.reduce((s, pk) => {
             const candidate = pk.paidPrice ?? pk.paidAmount ?? pk.totalPayable ?? pk.price ?? pk.amount ?? 0;
@@ -380,7 +366,6 @@ const StudentDashboard = () => {
           }
         }
 
-        // 6) As a last resort, if none of the above, use sum of packageCost
         if (amountR == null && Array.isArray(raw.packages) && raw.packages.length > 0) {
           const sumPc = raw.packages.reduce((s, pk) => s + (pk.packageCost != null ? Number(pk.packageCost) : 0), 0);
           if (sumPc > 0) amountR = amountToRupees(sumPc);
@@ -394,12 +379,10 @@ const StudentDashboard = () => {
           normalized.amount = Number(raw.amount);
         }
 
-        // --- NEW: Compute report-level cost, paid and discount ---
         let reportCost = null;
         let reportPaid = null;
         let reportDiscount = null;
 
-        // Cost: prefer sum of packageCost if packages exist
         if (Array.isArray(normalized.packages) && normalized.packages.length > 0) {
           const sumCost = normalized.packages.reduce((s, pkg) => {
             const candidate = pkg.packageCost != null ? Number(pkg.packageCost) : (pkg.price != null ? Number(pkg.price) : 0);
@@ -418,7 +401,6 @@ const StudentDashboard = () => {
           if (c != null) reportCost = Number(Math.round((c + Number.EPSILON) * 100) / 100);
         }
 
-        // Paid: prefer normalized.amountRupees if available, otherwise fallback to other fields
         if (normalized.amountRupees != null) {
           reportPaid = Number(Math.round((normalized.amountRupees + Number.EPSILON) * 100) / 100);
         } else {
@@ -453,7 +435,6 @@ const StudentDashboard = () => {
         normalized.reportPaid = reportPaid != null ? reportPaid : normalized.amountRupees != null ? Number(normalized.amountRupees) : null;
         normalized.reportDiscount = reportDiscount != null ? reportDiscount : (normalized.reportCost != null && normalized.reportPaid != null ? Number(Math.round(((normalized.reportCost - normalized.reportPaid) + Number.EPSILON) * 100) / 100) : null);
 
-        // Refund info
         const refundAmountRaw =
           raw.refundAmount ??
           raw.refundedAmount ??
@@ -603,7 +584,6 @@ const StudentDashboard = () => {
       alert("Cart is empty!");
       return;
     }
-    // cartTotal is in rupees already (we maintain it that way)
     const amountInPaise = Math.round(cartTotal * 100);
 
     const options = {
@@ -624,21 +604,17 @@ const StudentDashboard = () => {
           const mappedPromoter = studentInfo.mappedPromoter || null;
           const promoterResolved = await resolvePromoterInfo(mappedPromoter);
 
-          // helper: convert stored numeric values (could be paise or rupees) into rupees (number)
           const amountToRupees = (val) => {
             if (val == null) return 0;
             const n = Number(val);
             if (!Number.isFinite(n)) return 0;
-            // heuristic: if looks like paise then divide, else return as rupees
             if (Math.abs(n) >= 1000) return n / 100;
             if (Math.abs(n) >= 100 && n % 100 === 0) return n / 100;
             return n;
           };
 
-          // helper: parse discount fields that may be percent or rupee
           const parseDiscountField = (raw, basePrice) => {
             if (raw == null || raw === "") return { amount: 0, breakdown: "" };
-            // string percent "5%" or number <=100 treated as percent
             if (typeof raw === "string" && raw.trim().endsWith("%")) {
               const pct = Number(raw.replace(/%/g, "").trim()) || 0;
               const amt = (basePrice * pct) / 100;
@@ -665,53 +641,36 @@ const StudentDashboard = () => {
             return { amount: Number(amt.toFixed(2)), breakdown: `₹${Number(amt.toFixed(2))}` };
           };
 
-          // Build packagesPayload with discount details
+          // Build packagesPayload with detailed discount fields
           const packagesPayload = cart.map((pkg) => {
-            // Determine canonical base price (in rupees): prefer packageCost/price/mrp, fallback to totalPayable
             const rawBaseCandidates = pkg.packageCost ?? pkg.price ?? pkg.mrp ?? pkg.totalPayable ?? 0;
             const basePrice = Number(amountToRupees(rawBaseCandidates || 0));
 
-            // read regular + additional discount fields from package master or package object
             const regRaw = pkg.regularDiscount ?? pkg.regular_discount ?? pkg.regular ?? pkg.regularDiscountPercent ?? pkg.regular_percent ?? 0;
             const addRaw = pkg.additionalDiscount ?? pkg.additional_discount ?? pkg.additional ?? pkg.additionalDiscountPercent ?? pkg.additional_percent ?? 0;
 
             const reg = parseDiscountField(regRaw, basePrice);
             const add = parseDiscountField(addRaw, basePrice);
 
-            // sum discount amounts (treat as rupee amounts already)
-            const discountAmountCombined = Number(( (reg.amount || 0) + (add.amount || 0) ).toFixed(2));
+            const discountAmountCombined = Number(((reg.amount || 0) + (add.amount || 0)).toFixed(2));
 
-            // fallback: if pkg.totalPayable exists and basePrice > 0, compute implied discount
             let paidPriceComputed = null;
             if (typeof pkg.totalPayable !== "undefined" && pkg.totalPayable !== null && pkg.totalPayable !== "") {
               paidPriceComputed = Number(amountToRupees(pkg.totalPayable));
             } else {
-              // computed as basePrice - discounts
               paidPriceComputed = Number((basePrice - discountAmountCombined).toFixed(2));
             }
 
-            // now also consider any explicit per-package paidPrice fields
             let explicitPaidCandidate = null;
             if (pkg.paidPrice != null) explicitPaidCandidate = Number(amountToRupees(pkg.paidPrice));
             if (pkg.paidAmount != null && explicitPaidCandidate === null) explicitPaidCandidate = Number(amountToRupees(pkg.paidAmount));
             if (explicitPaidCandidate != null && Number.isFinite(explicitPaidCandidate) && explicitPaidCandidate > 0) {
-              // If explicit paid price provided, prefer it but still populate discountAmount if missing
               paidPriceComputed = explicitPaidCandidate;
-              // if discount wasn't provided, compute discount as base - explicit paid
-              if (!discountAmountCombined || discountAmountCombined === 0) {
-                const inferred = Number((basePrice - paidPriceComputed).toFixed(2));
-                // only use inferred if sensible
-                if (inferred >= 0) {
-                  // we'll set discountAmountCombined to inferred below in totals
-                }
-              }
             }
 
-            // Build human readable discount breakdown
             const breakdownParts = [];
             if (reg.amount && reg.amount > 0) breakdownParts.push(`regular ${reg.breakdown}`);
             if (add.amount && add.amount > 0) breakdownParts.push(`additional ${add.breakdown}`);
-            // also include explicit per-package discount fields if present (pkg.discount, pkg.discountAmount)
             const explicitPkgDiscountRaw = pkg.discount ?? pkg.discountAmount ?? pkg.discount_amount;
             if (explicitPkgDiscountRaw != null && explicitPkgDiscountRaw !== "") {
               const ed = parseDiscountField(explicitPkgDiscountRaw, basePrice);
@@ -719,15 +678,12 @@ const StudentDashboard = () => {
                 breakdownParts.push(`pkg ${ed.breakdown}`);
               }
             }
-
             const discountBreakdownString = breakdownParts.join(" + ") || "";
 
-            // price fields normalized:
             const packageCost = Number(basePrice || 0);
             const discountAmount = Number(discountAmountCombined || 0);
             const paidPrice = Number(paidPriceComputed || 0);
 
-            // commission logic (unchanged)
             const commissionPercent = safeNum(
               pkg.commission ?? pkg.promoterCommission ?? pkg.commissionPercent ?? pkg.commission_pct ?? pkg.promoter_commission_percent ?? 0
             );
@@ -757,10 +713,15 @@ const StudentDashboard = () => {
               subject: pkg.subject || "",
               subtopic: pkg.subtopic || "",
               chapter: pkg.chapter || "",
-              packageCost: Number(packageCost || 0), // rupees
-              discountAmount: Number(discountAmount || 0), // rupees (regular+additional)
+              packageCost: Number(packageCost || 0),
+              // per-package discount fields
+              regularDiscountPercent: regRaw ?? 0,
+              additionalDiscountPercent: addRaw ?? 0,
+              regularDiscountAmount: Number(reg.amount || 0),
+              additionalDiscountAmount: Number(add.amount || 0),
+              discountAmount: Number(discountAmount || 0),
               discountBreakdown: discountBreakdownString || "",
-              paidPrice: Number(paidPrice || 0), // rupees after discounts (or explicit)
+              paidPrice: Number(paidPrice || 0),
               commissionPercent: Number(commissionPercent || 0),
               commissionAmount: Number(commissionAmount || 0),
               price: Number(amountToRupees(pkg.price ?? pkg.packageCost ?? pkg.totalPayable ?? 0)),
@@ -768,10 +729,8 @@ const StudentDashboard = () => {
             };
           });
 
-          // Totals
           const packageTotalCost = packagesPayload.reduce((s, p) => s + Number(p.packageCost || 0), 0);
           const totalDiscount = packagesPayload.reduce((s, p) => s + Number(p.discountAmount || 0), 0);
-          // paidAmount: prefer cartTotal (client-side computed) but also compute as sum of per-package paidPrice
           const paidFromPackages = packagesPayload.reduce((s, p) => s + Number(p.paidPrice || 0), 0);
           const paidAmountCombined = Number(Math.round((paidFromPackages + Number.EPSILON) * 100) / 100);
           const finalPaidAmount = Number(Math.round((cartTotal + Number.EPSILON) * 100) / 100) || paidAmountCombined;
@@ -795,7 +754,7 @@ const StudentDashboard = () => {
             promoterDocId: promoterResolved?.promoterUid || null,
             promoterUniqueId: promoterResolved?.promoterUniqueId || null,
             promoterName: promoterResolved?.promoterName || null,
-            createPerPackage: false,
+            createPerPackage: true, // ask server to create one doc per package
             source: "razorpay_checkout_client",
             studentId: uid || null,
             studentName: finalStudentName || "",
@@ -853,57 +812,50 @@ const StudentDashboard = () => {
             }
           }
 
+          // CLIENT-SIDE FALLBACK: Create one document per package if callables fail
           if (!saved) {
             try {
-              // fallback doc with the fields we want to capture
-              const fallbackDocPayload = {
-                studentId: uid,
-                studentName: finalStudentName || "",
-                email: auth.currentUser?.email || "",
-                phone: finalStudentPhone || "",
-                packages: packagesPayload,
-                amount: Number(finalPaidAmount),
-                paidAmount: Number(finalPaidAmount),
-                paymentId: response.razorpay_payment_id,
-                paymentMethod: "razorpay",
-                paymentStatus: "paid",
-                settlementStatus: "pending",
-                promoterDocId: promoterResolved?.promoterUid || null,
-                promoterUid: promoterResolved?.promoterUid || null,
-                promoterUniqueId: promoterResolved?.promoterUniqueId || null,
-                promoterName: promoterResolved?.promoterName || null,
-                commissionTotal: Number(Math.round((commissionTotal + Number.EPSILON) * 100) / 100),
-                commissionPaid: false,
-                promoterPaid: false,
-                packageTotalCost: Number(Math.round((packageTotalCost + Number.EPSILON) * 100) / 100),
-                totalDiscount: Number(Math.round((totalDiscount + Number.EPSILON) * 100) / 100),
-                paidAmountCombined: Number(finalPaidAmount),
-                createdAt: serverTimestamp(),
-                paidAt: serverTimestamp(),
-                source: "razorpay_checkout_client_fallback",
-                gatewayRaw: { raw: response },
-              };
+              const createdRefs = [];
+              for (const p of packagesPayload) {
+                const pkgDoc = {
+                  studentId: uid,
+                  studentName: finalStudentName || "",
+                  email: auth.currentUser?.email || "",
+                  phone: finalStudentPhone || "",
+                  packageId: p.packageId || null,
+                  packageName: p.packageName || null,
+                  packageCost: Number(p.packageCost || 0),
+                  discountAmount: Number(p.discountAmount || 0),
+                  regularDiscountAmount: Number(p.regularDiscountAmount || 0),
+                  additionalDiscountAmount: Number(p.additionalDiscountAmount || 0),
+                  regularDiscountPercent: p.regularDiscountPercent ?? 0,
+                  additionalDiscountPercent: p.additionalDiscountPercent ?? 0,
+                  paidAmount: Number(p.paidPrice || p.totalPayable || 0),
+                  paymentId: response.razorpay_payment_id,
+                  paymentMethod: "razorpay",
+                  paymentStatus: "paid",
+                  settlementStatus: "pending",
+                  promoterDocId: promoterResolved?.promoterUid || null,
+                  promoterUid: promoterResolved?.promoterUid || null,
+                  promoterUniqueId: promoterResolved?.promoterUniqueId || null,
+                  promoterName: promoterResolved?.promoterName || null,
+                  commissionPercent: Number(p.commissionPercent || 0),
+                  commissionAmount: Number(p.commissionAmount || 0),
+                  createdAt: serverTimestamp(),
+                  paidAt: serverTimestamp(),
+                  source: "razorpay_checkout_client_fallback_per_package",
+                  gatewayRaw: { raw: response },
+                };
 
-              if (packagesPayload.length === 1) {
-                const p0 = packagesPayload[0];
-                fallbackDocPayload.packageId = p0.packageId || p0.id || null;
-                fallbackDocPayload.packageName = p0.packageName || null;
-                fallbackDocPayload.packageCost = p0.packageCost || null;
-                fallbackDocPayload.discountAmount = p0.discountAmount || null;
-                fallbackDocPayload.paidPrice = p0.paidPrice || null;
-                fallbackDocPayload.commissionPercent = p0.commissionPercent || null;
-                fallbackDocPayload.commissionAmount = p0.commissionAmount || null;
+                const docRef = await addDoc(collection(db, "payments"), pkgDoc);
+                createdRefs.push(docRef.id);
               }
 
-              delete fallbackDocPayload.pendingAmount;
-              delete fallbackDocPayload.teamCount;
-
-              const pRef = await addDoc(collection(db, "payments"), fallbackDocPayload);
-              console.log("Fallback: saved payments doc client-side:", pRef.id);
+              console.log("Fallback: saved payments docs client-side (per-package):", createdRefs);
               saved = true;
-              savedPaymentDocId = pRef.id;
+              savedPaymentDocId = createdRefs[0] || null;
             } catch (addErr) {
-              console.error("Fallback addDoc to /payments failed:", addErr);
+              console.error("Fallback addDoc per-package to /payments failed:", addErr);
               lastErr = addErr;
             }
           }
@@ -977,7 +929,7 @@ const StudentDashboard = () => {
         display: "flex",
         gap: "20px",
         minHeight: "100vh",
-        background: "transparent", // body holds the gradient to avoid white gap on mobile
+        background: "transparent",
         paddingBottom: "140px",
       }}
     >
@@ -1086,7 +1038,6 @@ const StudentDashboard = () => {
                         ? new Date(r.createdAtClient).toLocaleString("en-IN")
                         : "—";
 
-                      // human-readable payment status
                       const st = (r.paymentStatusResolved || r.paymentStatus || r.settlementStatus || "").toString().toLowerCase();
                       let displayStatus = "Paid";
                       if (st.includes("refund") || st.includes("refunded")) displayStatus = "Refunded";
@@ -1094,7 +1045,6 @@ const StudentDashboard = () => {
                       else if (st.includes("fail") || st.includes("failed")) displayStatus = "Failed";
                       else if (!paid || Number(paid) === 0) displayStatus = "Unpaid";
 
-                      // refund info text
                       let refundInfo = "—";
                       if (r.refundAmount != null && Number(r.refundAmount) > 0) {
                         refundInfo = `₹${Number(r.refundAmount).toFixed(2)}`;

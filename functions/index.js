@@ -765,12 +765,27 @@ exports.confirmPayout = functions
    (full implementations)
    ============================================================ */
 
+/*
+  REPLACED processCreatePayment — updated to store per-package fields:
+  - paidPrice, regularDiscountAmount, additionalDiscountAmount, discountAmount
+  - regularDiscountPercent, additionalDiscountPercent
+  - totalPayable, price
+  - rawPackage for debugging
+  - createPerPackage branch now writes single-payment docs with those fields
+*/
+
 async function processCreatePayment(data, context, options = {}) {
   if (!context || !context.auth) {
     throw new functions.https.HttpsError("unauthenticated", "Authentication required.");
   }
   const callerUid = context.auth.uid;
-  const { paymentId, packages, totalAmount, mappedPromoter = null, createPerPackage = false } = data || {};
+  const {
+    paymentId,
+    packages,
+    totalAmount,
+    mappedPromoter = null,
+    createPerPackage = false,
+  } = data || {};
 
   if (!paymentId || !Array.isArray(packages) || packages.length === 0) {
     throw new functions.https.HttpsError("invalid-argument", "paymentId and non-empty packages array required.");
@@ -884,13 +899,24 @@ async function processCreatePayment(data, context, options = {}) {
     const computedPackages = [];
     let transCommissionTotal = 0;
     for (const pkg of packages) {
-      const pkgPrice = Number(pkg.packageCost ?? pkg.price ?? pkg.totalPayable ?? 0) || 0;
+      // normalize numeric fields defensively
+      const pkgPrice = Number(pkg.packageCost ?? pkg.price ?? pkg.totalPayable ?? pkg.paidPrice ?? 0) || 0;
       const commissionPercent = Number(pkg.commission ?? pkg.promoterCommission ?? pkg.commissionPercent ?? 0) || 0;
       const commissionAmountRaw =
         pkg.commissionAmount !== undefined && pkg.commissionAmount !== null
           ? Number(pkg.commissionAmount)
           : (pkgPrice * commissionPercent) / 100;
       const commissionAmount = Number((Number(commissionAmountRaw) || 0).toFixed(2));
+
+      // Gather per-package discount + price fields if provided by client
+      const discountAmount = Number(pkg.discountAmount ?? pkg.discount ?? 0) || 0;
+      const regularDiscountAmount = Number(pkg.regularDiscountAmount ?? pkg.regular_discount_amount ?? 0) || 0;
+      const additionalDiscountAmount = Number(pkg.additionalDiscountAmount ?? pkg.additional_discount_amount ?? 0) || 0;
+      const regularDiscountPercent = pkg.regularDiscountPercent ?? pkg.regular_discount_percent ?? pkg.regularDiscount ?? pkg.regular ?? 0;
+      const additionalDiscountPercent = pkg.additionalDiscountPercent ?? pkg.additional_discount_percent ?? pkg.additionalDiscount ?? pkg.additional ?? 0;
+      const paidPrice = Number(pkg.paidPrice ?? pkg.paidAmount ?? pkg.totalPayable ?? pkg.price ?? pkg.packageCost ?? 0) || 0;
+      const totalPayable = Number(pkg.totalPayable ?? pkg.paidPrice ?? pkg.paidAmount ?? paidPrice) || paidPrice;
+      const price = Number(pkg.price ?? pkg.packageCost ?? pkg.totalPayable ?? pkg.paidPrice ?? 0) || 0;
 
       const computed = {
         id: pkg.id || null,
@@ -899,10 +925,19 @@ async function processCreatePayment(data, context, options = {}) {
         subject: pkg.subject || null,
         subtopic: pkg.subtopic || null,
         chapter: pkg.chapter || null,
-        packageCost: pkgPrice,
+        packageCost: Number(pkgPrice || 0),
+        price: Number(price || 0),
+        totalPayable: Number(totalPayable || 0),
+        paidPrice: Number(paidPrice || 0),
+        discountAmount: Number(discountAmount || 0),
+        regularDiscountAmount: Number(regularDiscountAmount || 0),
+        additionalDiscountAmount: Number(additionalDiscountAmount || 0),
+        regularDiscountPercent: Number(regularDiscountPercent || 0),
+        additionalDiscountPercent: Number(additionalDiscountPercent || 0),
         commissionPercent,
         commissionAmount,
         meta: pkg.meta || null,
+        rawPackage: pkg, // keep full original package payload for debugging / future migrations
       };
       computedPackages.push(computed);
       transCommissionTotal += commissionAmount;
@@ -916,7 +951,13 @@ async function processCreatePayment(data, context, options = {}) {
     const finalStudentEmail = studentEmailFromToken || (callerUserDoc && callerUserDoc.email) || null;
     const finalStudentPhone = studentPhoneFromToken || (callerUserDoc && (callerUserDoc.phone || callerUserDoc.contact || callerUserDoc.mobile)) || null;
 
+    // compute totals
+    const computedPackageTotal = computedPackages.reduce((s, x) => s + (Number(x.packageCost || 0)), 0);
+    const computedPaidSum = computedPackages.reduce((s, x) => s + (Number(x.paidPrice || x.totalPayable || 0)), 0);
+    const computedDiscountSum = computedPackages.reduce((s, x) => s + (Number(x.discountAmount || 0)), 0);
+
     if (createPerPackage) {
+      const perPackageRefs = [];
       for (const cPkg of computedPackages) {
         const singlePaymentDoc = {
           studentId: callerUid,
@@ -924,6 +965,20 @@ async function processCreatePayment(data, context, options = {}) {
           email: finalStudentEmail,
           phone: finalStudentPhone,
           packages: [cPkg],
+          // also add explicit top-level convenience fields
+          packageId: cPkg.packageId || null,
+          packageName: cPkg.packageName || null,
+          packageCost: cPkg.packageCost || 0,
+          price: cPkg.price || 0,
+          totalPayable: cPkg.totalPayable || 0,
+          paidPrice: cPkg.paidPrice || 0,
+          discountAmount: cPkg.discountAmount || 0,
+          regularDiscountAmount: cPkg.regularDiscountAmount || 0,
+          additionalDiscountAmount: cPkg.additionalDiscountAmount || 0,
+          regularDiscountPercent: cPkg.regularDiscountPercent || 0,
+          additionalDiscountPercent: cPkg.additionalDiscountPercent || 0,
+          commissionPercent: cPkg.commissionPercent || 0,
+          commissionAmount: cPkg.commissionAmount || 0,
           paymentId,
           paymentMethod: "razorpay",
           status: "paid",
@@ -938,6 +993,7 @@ async function processCreatePayment(data, context, options = {}) {
           paymentDate: nowIso,
           createdAt: nowIso,
           rawRazorpay: rp || null,
+          meta: cPkg.meta || null,
         };
 
         const newRef = paymentsCol.doc();
@@ -947,24 +1003,26 @@ async function processCreatePayment(data, context, options = {}) {
           paidAt: admin.firestore.FieldValue.serverTimestamp(),
         });
         createdPaymentDocIds.push(newRef.id);
+        perPackageRefs.push(newRef.id);
       }
 
+      // create studentDatabase record referencing the per-package docs (array)
       const studentRecordRef = studentDbCol.doc();
       tx.set(studentRecordRef, {
         studentId: callerUid,
         name: finalStudentName || null,
         email: finalStudentEmail || "",
-        phone: finalStudentPhone || null,
+        phone: finalStudentPhone || "",
         packages: computedPackages,
-        totalPackageCost: Number(totalAmount || computedPackages.reduce((s, x) => s + (Number(x.packageCost || 0)), 0).toFixed(2)),
-        amount: Number(totalAmount || computedPackages.reduce((s, x) => s + (Number(x.packageCost || 0)), 0).toFixed(2)),
+        totalPackageCost: Number(totalAmount || computedPackageTotal),
+        amount: Number(totalAmount || computedPaidSum || computedPackageTotal),
         paymentId,
         paymentStatus: "Paid",
         paymentDate: nowIso,
         promoterDocId: promoterDocId || null,
         promoterApproved: false,
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
-        paymentsRefIds: createdPaymentDocIds,
+        paymentsRefIds: perPackageRefs,
       });
       createdPaymentDocIds.push(studentRecordRef.id);
     } else {
@@ -988,6 +1046,8 @@ async function processCreatePayment(data, context, options = {}) {
         paymentDate: nowIso,
         createdAt: nowIso,
         rawRazorpay: rp || null,
+        amount: Number(totalAmount != null ? totalAmount : computedPaidSum),
+        totalPackageCost: Number(totalAmount != null ? totalAmount : computedPackageTotal),
       };
 
       const newPaymentRef = paymentsCol.doc();
@@ -1005,8 +1065,8 @@ async function processCreatePayment(data, context, options = {}) {
         email: paymentDoc.email || null,
         phone: paymentDoc.phone || null,
         packages: paymentDoc.packages,
-        totalPackageCost: Number(totalAmount || paymentDoc.packages.reduce((s, x) => s + (Number(x.packageCost || 0)), 0).toFixed(2)),
-        amount: Number(totalAmount || paymentDoc.packages.reduce((s, x) => s + (Number(x.packageCost || 0)), 0).toFixed(2)),
+        totalPackageCost: paymentDoc.totalPackageCost,
+        amount: paymentDoc.amount,
         paymentId,
         paymentStatus: "Paid",
         paymentDate: nowIso,
@@ -1709,4 +1769,3 @@ exports.confirmRefund = functions
       throw new functions.https.HttpsError("internal", "Refund failed: " + (err?.message || String(err)));
     }
   });
-
