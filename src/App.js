@@ -1,16 +1,23 @@
 // src/App.js
 import React from "react";
-import { BrowserRouter as Router, Routes, Route, Link, useLocation } from "react-router-dom";
+import { BrowserRouter as Router, Routes, Route, Link, useLocation, Navigate } from "react-router-dom";
 import SignInPage from "./pages/SignInPage";
 import StudentDashboard from "./pages/StudentDashboard";
-import PromoterDashboard from "./pages/PromoterDashboard";
 import AdminDashboard from "./pages/AdminDashboard";
 import ApprovePromoter from "./pages/ApprovePromoter";
 import PromoterDatabase from "./pages/PromoterDatabase";
 import StudentDatabase from "./pages/StudentDatabase";
 
-// 🔹 Correct page name as per your setup
+// Promoter route-driven layout + child pages
+import PromoterLayout from "./components/PromoterLayout"; // NEW - route-driven layout (see file below)
+import PromoterHome from "./components/PromoterHome"; // NEW - index child (see file below)
+import PromoterPackages from "./pages/PromoterPackages";
 import PromoterStudents from "./pages/PromoterStudents";
+import PromoterCommission from "./pages/PromoterCommission";
+import PromoterBank from "./pages/PromoterBank";
+import PromoterProfile from "./pages/PromoterProfile";
+import PromoterPackageDetail from "./pages/PromoterPackageDetail"; // optional if you have it
+import PromoterPackageEdit from "./pages/PromoterPackageEdit"; // optional
 
 // Policy Pages
 import Terms from "./pages/Terms";
@@ -25,7 +32,7 @@ import FirestoreDebug from "./pages/FirestoreDebug";
 function Layout() {
   const location = useLocation();
 
-  // ✅ Hide footer policies on dashboards only
+  // Hide footer policies on dashboards only
   const hideFooterRoutes = [
     "/student-dashboard",
     "/promoter-dashboard",
@@ -36,9 +43,7 @@ function Layout() {
     "/promoter-students",
   ];
 
-  const shouldShowFooter = !hideFooterRoutes.some((path) =>
-    location.pathname.includes(path)
-  );
+  const shouldShowFooter = !hideFooterRoutes.some((path) => location.pathname.includes(path));
 
   return (
     <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column" }}>
@@ -49,17 +54,26 @@ function Layout() {
 
           {/* Dashboards */}
           <Route path="/student-dashboard" element={<StudentDashboard />} />
-          <Route path="/promoter-dashboard" element={<PromoterDashboard />} />
+
+          {/* Promoter: route-driven layout with nested routes */}
+          <Route path="/promoter-dashboard" element={<PromoterLayout />}>
+            <Route index element={<PromoterHome />} />
+            <Route path="packages" element={<PromoterPackages />} />
+            <Route path="packages/:id" element={<PromoterPackageDetail />} />
+            <Route path="packages/edit/:id" element={<PromoterPackageEdit />} />
+            <Route path="students" element={<PromoterStudents />} />
+            <Route path="commission" element={<PromoterCommission />} />
+            <Route path="bank" element={<PromoterBank />} />
+            <Route path="profile" element={<PromoterProfile />} />
+          </Route>
+
           <Route path="/admin-dashboard" element={<AdminDashboard />} />
           <Route path="/approve-promoter" element={<ApprovePromoter />} />
           <Route path="/promoter-database" element={<PromoterDatabase />} />
           <Route path="/student-database" element={<StudentDatabase />} />
 
-          {/* 🔹 Promoter’s tagged students */}
-          <Route
-            path="/promoter-students/:promoterId"
-            element={<PromoterStudents />}
-          />
+          {/* Promoter’s tagged students (legacy separate route you had) */}
+          <Route path="/promoter-students/:promoterId" element={<PromoterStudents />} />
 
           {/* Policy Pages */}
           <Route path="/terms" element={<Terms />} />
@@ -68,12 +82,15 @@ function Layout() {
           <Route path="/shipping" element={<Shipping />} />
           <Route path="/contact" element={<Contact />} />
 
-          {/* 🔹 Firestore Debug */}
+          {/* Firestore Debug */}
           <Route path="/debug" element={<FirestoreDebug />} />
+
+          {/* fallback */}
+          <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </div>
 
-      {/* ✅ Footer Policies — hidden on dashboards */}
+      {/* Footer Policies (hidden on dashboards) */}
       {shouldShowFooter && (
         <footer
           style={{

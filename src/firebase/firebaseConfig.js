@@ -33,17 +33,13 @@ const storage = getStorage(app);
 // Google provider
 const googleProvider = new GoogleAuthProvider();
 
-// Debug helper you can use from browser console to confirm runtime config:
-//  - open DevTools Console and run: window.__FIREBASE_CONFIG__ && console.log(window.__FIREBASE_CONFIG__);
+// Debug helper for verifying config at runtime
 if (typeof window !== "undefined") {
-  // expose small read-only copy for quick checks
   window.__FIREBASE_CONFIG__ = {
     projectId: firebaseConfig.projectId,
     storageBucket: firebaseConfig.storageBucket,
     authDomain: firebaseConfig.authDomain,
   };
-  // also log it once (remove/comment after confirming)
-  // eslint-disable-next-line no-console
   console.log("Firebase runtime config:", window.__FIREBASE_CONFIG__);
 }
 

@@ -1,3 +1,4 @@
+/* src/pages/StudentDashboard.jsx */
 /* eslint-disable */
 import React, { useEffect, useMemo, useState } from "react";
 import { db, auth } from "../firebase/firebaseConfig";
@@ -35,7 +36,6 @@ function unique(arr) {
   return [...new Set(arr.filter(Boolean))];
 }
 
-// Normalizers
 function normalizeSubject(s) {
   if (!s) return "";
   const key = s.toLowerCase().replace(/\s+/g, "");
@@ -58,17 +58,11 @@ function normalizeText(s) {
 }
 const isConceptPackageName = (name) => normalizeText(name) === "concept based package";
 
-/* -------------------------
-   Small helpers
-   ------------------------- */
 const safeNum = (v) => {
   const n = Number(v);
   return Number.isFinite(n) ? n : 0;
 };
 
-/* -------------------------
-   Get Functions instance (try default then region fallback)
-   ------------------------- */
 function getFunctionsInstance() {
   try {
     return getFunctions();
@@ -76,21 +70,16 @@ function getFunctionsInstance() {
     console.warn("getFunctions() failed, trying asia-south1 fallback...", e?.message || e);
   }
   try {
-    // common region for India deployments; change if your functions are in another region
     return getFunctions(undefined, "asia-south1");
   } catch (e) {
     console.warn("getFunctions(region) also failed:", e?.message || e);
-    // final fallback - still try default
     return getFunctions();
   }
 }
 
-/* -------------------------
-   Component
-   ------------------------- */
 const StudentDashboard = () => {
   const navigate = useNavigate();
-  const [studentInfo, setStudentInfo] = useState({ name: "", classGrade: "", syllabus: "", mappedPromoter: "" });
+  const [studentInfo, setStudentInfo] = useState({ name: "", classGrade: "", syllabus: "", mappedPromoter: "", phone: "" });
   const [packages, setPackages] = useState([]);
   const [selectedType, setSelectedType] = useState("");
   const [selectedPackageName, setSelectedPackageName] = useState("");
@@ -99,15 +88,15 @@ const StudentDashboard = () => {
   const [selectedChapter, setSelectedChapter] = useState("");
   const [cart, setCart] = useState([]);
 
-  // New: reports state & active tab
-  const [activeTab, setActiveTab] = useState("shop"); // "shop" (default) or "reports"
+  const [activeTab, setActiveTab] = useState("shop");
   const [studentReports, setStudentReports] = useState([]);
   const [loadingReports, setLoadingReports] = useState(false);
 
-  // Functions instance for callable
+  // New: mobile cart overlay visibility
+  const [showMobileCart, setShowMobileCart] = useState(false);
+
   const functions = useMemo(() => getFunctionsInstance(), []);
 
-  // Load Razorpay dynamically
   useEffect(() => {
     const script = document.createElement("script");
     script.src = "https://checkout.razorpay.com/v1/checkout.js";
@@ -120,7 +109,20 @@ const StudentDashboard = () => {
     };
   }, []);
 
-  // Auth check
+  // Ensure the gradient stays visible on mobile when scrolling by pinning background
+  useEffect(() => {
+    // set background-attachment fixed on the root element to avoid white gaps during mobile scroll
+    // NOTE: we don't mutate body permanently; clean up on unmount
+    const prev = document.body.style.backgroundAttachment;
+    const prevBg = document.body.style.background;
+    document.body.style.backgroundAttachment = "fixed";
+    document.body.style.background = "linear-gradient(135deg, #1d2671, #c33764)";
+    return () => {
+      document.body.style.backgroundAttachment = prev || "";
+      document.body.style.background = prevBg || "";
+    };
+  }, []);
+
   useEffect(() => {
     const unsub = auth.onAuthStateChanged(async (user) => {
       if (!user) navigate("/");
@@ -133,12 +135,10 @@ const StudentDashboard = () => {
               name: data.name || "Student",
               classGrade: data.classGrade || data.class || data.grade || "",
               syllabus: data.syllabus || data.board || "",
-              // support multiple common fields used for promoter-ref mapping
               mappedPromoter: data.mappedPromoter || data.promoterId || data.referralId || "",
               phone: data.phone || user.phoneNumber || "",
             });
           } else {
-            // Fallback if no user doc
             setStudentInfo((s) => ({ ...s, name: user.displayName || "Student", phone: user.phoneNumber || "" }));
           }
         } catch (err) {
@@ -149,7 +149,6 @@ const StudentDashboard = () => {
     return () => unsub();
   }, [navigate]);
 
-  // Fetch packages from Firestore
   useEffect(() => {
     if (!studentInfo.classGrade || !studentInfo.syllabus) return;
 
@@ -171,7 +170,6 @@ const StudentDashboard = () => {
     fetchPackages();
   }, [studentInfo.classGrade, studentInfo.syllabus]);
 
-  // Filters
   const filteredByType = useMemo(
     () => (selectedType ? packages.filter((p) => p.packageType === selectedType) : []),
     [packages, selectedType]
@@ -209,7 +207,6 @@ const StudentDashboard = () => {
     [filteredByPackageName, selectedSubject, selectedSubtopic, selectedPackageName]
   );
 
-  // Cards list
   const conceptCards = useMemo(() => {
     if (!selectedPackageName) return [];
     if (isConceptPackageName(selectedPackageName)) {
@@ -224,24 +221,30 @@ const StudentDashboard = () => {
     return filteredByPackageName;
   }, [filteredByPackageName, selectedPackageName, selectedSubject, selectedSubtopic, selectedChapter]);
 
-  // Cart operations
   const addToCart = (pkg) => {
     if (!cart.find((p) => p.id === pkg.id)) setCart((c) => [...c, pkg]);
+    // when user adds to cart on mobile, show the mobile cart indicator
+    if (window.innerWidth <= 900) setShowMobileCart(true);
   };
   const removeFromCart = (id) => setCart((c) => c.filter((p) => p.id !== id));
-  const cartTotal = useMemo(() => cart.reduce((sum, p) => sum + safeNum(p.totalPayable || p.price || 0), 0), [cart]);
+  const cartTotal = useMemo(() => {
+    // prefer pkg.totalPayable if present else compute from price minus discounts (we'll compute consistently on checkout)
+    const total = cart.reduce((sum, p) => {
+      const v = Number(p.totalPayable ?? p.paidAmount ?? p.price ?? p.packageCost ?? 0);
+      return sum + (Number.isFinite(v) ? v : 0);
+    }, 0);
+    return Number(Math.round((total + Number.EPSILON) * 100) / 100);
+  }, [cart]);
 
-  // Helper - compute displayed price safely
   const computeFinalPrice = (pkg) => {
-    const basePrice = safeNum(pkg.price || pkg.totalPayable || 0);
-    const d1 = safeNum(pkg.regularDiscount || 0);
-    const d2 = safeNum(pkg.additionalDiscount || 0);
+    const basePrice = safeNum(pkg.price || pkg.totalPayable || pkg.packageCost || 0);
+    const d1 = safeNum(pkg.regularDiscount || pkg.regular_discount || pkg.regular || 0);
+    const d2 = safeNum(pkg.additionalDiscount || pkg.additional_discount || pkg.additional || 0);
     const computedFinal = basePrice - (basePrice * d1) / 100 - (basePrice * d2) / 100;
     const finalPrice = Number.isFinite(parseFloat(pkg.totalPayable)) ? parseFloat(pkg.totalPayable) : computedFinal;
     return { basePrice, finalPrice, d1, d2 };
   };
 
-  // Fetch student's own payments from `payments` collection (updated)
   const fetchStudentReports = async () => {
     setLoadingReports(true);
     try {
@@ -254,38 +257,30 @@ const StudentDashboard = () => {
       const q = query(collection(db, "payments"), where("studentId", "==", uid));
       const snapshot = await getDocs(q);
 
-      // Helper to safely convert Firestore Timestamp -> ms / ISO
       const tsToMs = (ts) => {
         if (!ts) return null;
-        // Firestore Timestamp instance (has toMillis)
         if (typeof ts.toMillis === "function") return ts.toMillis();
-        // Object with seconds field (raw)
         if (typeof ts.seconds === "number") return ts.seconds * 1000;
-        // If number (ms)
         if (typeof ts === "number") return ts;
-        // Date-like string
         const d = new Date(ts);
         if (!isNaN(d.getTime())) return d.getTime();
         return null;
       };
 
-      // Helper to convert an amount (possibly in paise) to rupees
       const amountToRupees = (val) => {
         if (val == null) return null;
         const n = Number(val);
         if (!Number.isFinite(n)) return null;
-        // Heuristic: treat round multiples of 100 as paise
-        if (n >= 100 && n % 100 === 0) return n / 100;
-        if (n >= 1000) return n / 100;
+        // Heuristic: treat paise when number is >=1000 or divisible by 100 with no decimals
+        if (Math.abs(n) >= 1000) return n / 100;
+        if (Math.abs(n) >= 100 && n % 100 === 0) return n / 100;
         return n;
       };
 
-      // Normalize each doc so UI never receives Timestamp objects
       const normalizeDoc = (d) => {
-        const raw = d.data ? d.data() : d; // handle if already plain object
+        const raw = d.data ? d.data() : d;
         const normalized = { id: d.id || raw.id, ...raw };
 
-        // createdAt / paidAt -> create client-friendly fields
         const createdMs = tsToMs(raw.createdAt);
         const paidMs = tsToMs(raw.paidAt);
 
@@ -303,11 +298,10 @@ const StudentDashboard = () => {
           normalized.paidAtClient = Number(raw.paidAtClient) || null;
         }
 
-        // Some docs might have nested packages array; ensure packageName and subject are strings
+        // Normalize packages array and inner fields
         if (Array.isArray(raw.packages)) {
           normalized.packages = raw.packages.map((pkg) => {
             const safePkg = { ...pkg };
-            // convert any nested timestamps inside package (if present)
             if (pkg.createdAt) {
               const m = tsToMs(pkg.createdAt);
               if (m) {
@@ -315,23 +309,31 @@ const StudentDashboard = () => {
                 safePkg.createdAtISO = new Date(m).toISOString();
               }
             }
-            // ensure fields that should be strings are strings
             safePkg.packageName = typeof pkg.packageName === "string" ? pkg.packageName : (pkg.packageName ? String(pkg.packageName) : "");
             safePkg.subject = typeof pkg.subject === "string" ? pkg.subject : (pkg.subject ? String(pkg.subject) : "");
             safePkg.subtopic = typeof pkg.subtopic === "string" ? pkg.subtopic : (pkg.subtopic ? String(pkg.subtopic) : "");
             safePkg.chapter = typeof pkg.chapter === "string" ? pkg.chapter : (pkg.chapter ? String(pkg.chapter) : "");
-            // normalize packageCost numeric
+            // numeric conversions if present
             if (pkg.packageCost != null) safePkg.packageCost = Number(pkg.packageCost);
+            if (pkg.price != null) safePkg.price = Number(pkg.price);
+            if (pkg.totalPayable != null) safePkg.totalPayable = Number(pkg.totalPayable);
+            if (pkg.discountAmount != null) safePkg.discountAmount = Number(pkg.discountAmount);
+            // best-effort paidPrice for package
+            safePkg.paidPrice =
+              (pkg.paidPrice != null ? Number(pkg.paidPrice) : null) ??
+              (pkg.paidAmount != null ? Number(pkg.paidAmount) : null) ??
+              (pkg.totalPayable != null ? Number(pkg.totalPayable) : null) ??
+              (pkg.price != null ? Number(pkg.price) : null) ??
+              (pkg.amount != null ? Number(pkg.amount) : null) ??
+              0;
             return safePkg;
           });
         } else {
-          // if single package stored as object, normalize keys
           if (raw.packageName && !Array.isArray(raw.packageName)) {
             normalized.packageName = typeof raw.packageName === "string" ? raw.packageName : String(raw.packageName);
           }
         }
 
-        // Ensure settlementStatus / paymentStatus are strings (guard)
         if (normalized.settlementStatus && typeof normalized.settlementStatus !== "string") {
           normalized.settlementStatus = String(normalized.settlementStatus);
         }
@@ -339,20 +341,50 @@ const StudentDashboard = () => {
           normalized.paymentStatus = String(normalized.paymentStatus);
         }
 
-        // --- NEW: compute amount in rupees reliably ---
+        // --- PRIORITIZE actual paid amount (rawRazorpay, paidAmount, paymentAmount, amount) ---
         let amountR = null;
-        if (raw.amount != null) amountR = amountToRupees(raw.amount);
-        if (amountR == null && raw.totalAmount != null) amountR = amountToRupees(raw.totalAmount);
-        if (amountR == null && raw.totalPackageCost != null) amountR = amountToRupees(raw.totalPackageCost);
-        if (amountR == null && raw.packageCost != null) amountR = amountToRupees(raw.packageCost);
+
+        // 1) rawRazorpay.amount (Razorpay sends paise often)
+        if (raw.rawRazorpay && raw.rawRazorpay.amount != null) {
+          const v = amountToRupees(raw.rawRazorpay.amount);
+          if (v != null) amountR = v;
+        }
+
+        // 2) explicit paidAmount field
+        if (amountR == null && raw.paidAmount != null) {
+          const v = amountToRupees(raw.paidAmount);
+          if (v != null) amountR = v;
+        }
+
+        // 3) paymentAmount (alternate naming)
+        if (amountR == null && raw.paymentAmount != null) {
+          const v = amountToRupees(raw.paymentAmount);
+          if (v != null) amountR = v;
+        }
+
+        // 4) amount/top-level numeric
+        if (amountR == null && raw.amount != null) {
+          const v = amountToRupees(raw.amount);
+          if (v != null) amountR = v;
+        }
+
+        // 5) If not found above, try summing paid values inside packages (preferred over packageCost)
+        if (amountR == null && Array.isArray(raw.packages) && raw.packages.length > 0) {
+          const sumPaid = raw.packages.reduce((s, pk) => {
+            const candidate = pk.paidPrice ?? pk.paidAmount ?? pk.totalPayable ?? pk.price ?? pk.amount ?? 0;
+            const n = amountToRupees(candidate) ?? 0;
+            return s + n;
+          }, 0);
+          if (sumPaid > 0) {
+            amountR = Number(Math.round((sumPaid + Number.EPSILON) * 100) / 100);
+          }
+        }
+
+        // 6) As a last resort, if none of the above, use sum of packageCost
         if (amountR == null && Array.isArray(raw.packages) && raw.packages.length > 0) {
           const sumPc = raw.packages.reduce((s, pk) => s + (pk.packageCost != null ? Number(pk.packageCost) : 0), 0);
           if (sumPc > 0) amountR = amountToRupees(sumPc);
         }
-        if (amountR == null && raw.rawRazorpay && raw.rawRazorpay.amount != null) {
-          amountR = amountToRupees(raw.rawRazorpay.amount);
-        }
-        if (amountR == null && raw.paymentAmount != null) amountR = amountToRupees(raw.paymentAmount);
 
         normalized.amountRupees = amountR != null ? Number(amountR) : null;
 
@@ -362,11 +394,119 @@ const StudentDashboard = () => {
           normalized.amount = Number(raw.amount);
         }
 
+        // --- NEW: Compute report-level cost, paid and discount ---
+        let reportCost = null;
+        let reportPaid = null;
+        let reportDiscount = null;
+
+        // Cost: prefer sum of packageCost if packages exist
+        if (Array.isArray(normalized.packages) && normalized.packages.length > 0) {
+          const sumCost = normalized.packages.reduce((s, pkg) => {
+            const candidate = pkg.packageCost != null ? Number(pkg.packageCost) : (pkg.price != null ? Number(pkg.price) : 0);
+            const conv = (n) => {
+              if (!Number.isFinite(n)) return 0;
+              if (Math.abs(n) >= 1000) return n / 100;
+              if (Math.abs(n) >= 100 && n % 100 === 0) return n / 100;
+              return n;
+            };
+            return s + conv(candidate);
+          }, 0);
+          if (sumCost > 0) reportCost = Number(Math.round((sumCost + Number.EPSILON) * 100) / 100);
+        } else {
+          const candidateCost = raw.packageTotalCost ?? raw.totalPackageCost ?? raw.packageCost ?? raw.totalAmount ?? null;
+          const c = amountToRupees(candidateCost);
+          if (c != null) reportCost = Number(Math.round((c + Number.EPSILON) * 100) / 100);
+        }
+
+        // Paid: prefer normalized.amountRupees if available, otherwise fallback to other fields
+        if (normalized.amountRupees != null) {
+          reportPaid = Number(Math.round((normalized.amountRupees + Number.EPSILON) * 100) / 100);
+        } else {
+          const fallbackPaidCandidates = [raw.paidAmount, raw.paymentAmount, raw.amount];
+          let found = null;
+          for (const cand of fallbackPaidCandidates) {
+            const c = amountToRupees(cand);
+            if (c != null) {
+              found = c;
+              break;
+            }
+          }
+          if (found != null) reportPaid = Number(Math.round((found + Number.EPSILON) * 100) / 100);
+        }
+
+        if (reportPaid == null && Array.isArray(normalized.packages) && normalized.packages.length > 0) {
+          const sumPaid = normalized.packages.reduce((s, pkg) => {
+            const candidate = pkg.paidPrice ?? pkg.totalPayable ?? pkg.price ?? pkg.amount ?? 0;
+            const n = amountToRupees(candidate) ?? 0;
+            return s + n;
+          }, 0);
+          if (sumPaid > 0) reportPaid = Number(Math.round((sumPaid + Number.EPSILON) * 100) / 100);
+        }
+
+        if (reportCost != null && reportPaid != null) {
+          reportDiscount = Number(Math.round(((reportCost - reportPaid) + Number.EPSILON) * 100) / 100);
+        } else {
+          reportDiscount = null;
+        }
+
+        normalized.reportCost = reportCost;
+        normalized.reportPaid = reportPaid != null ? reportPaid : normalized.amountRupees != null ? Number(normalized.amountRupees) : null;
+        normalized.reportDiscount = reportDiscount != null ? reportDiscount : (normalized.reportCost != null && normalized.reportPaid != null ? Number(Math.round(((normalized.reportCost - normalized.reportPaid) + Number.EPSILON) * 100) / 100) : null);
+
+        // Refund info
+        const refundAmountRaw =
+          raw.refundAmount ??
+          raw.refundedAmount ??
+          (raw.rawRazorpay && (raw.rawRazorpay.amount_refunded ?? raw.rawRazorpay.amount_refunded)) ??
+          raw.rawRazorpay?.amount_refunded ??
+          null;
+
+        const refundAmount = refundAmountRaw != null ? amountToRupees(refundAmountRaw) : null;
+
+        const refundReason =
+          raw.refundReason ??
+          raw.refund_reason ??
+          (raw.rawRazorpay && (
+            (raw.rawRazorpay.notes && (raw.rawRazorpay.notes.reason || raw.rawRazorpay.notes.remarks)) ||
+            raw.rawRazorpay.description ||
+            raw.rawRazorpay.error_reason
+          )) ??
+          raw.rawRazorpay?.error_reason ??
+          null;
+
+        const statusCandidates = [
+          raw.paymentStatus,
+          raw.status,
+          raw.settlementStatus,
+          raw.razorpayStatus,
+          raw.refundStatus,
+          raw.rawRazorpay && raw.rawRazorpay.status,
+        ].filter(Boolean).map((s) => String(s).toLowerCase());
+
+        let resolvedStatus = statusCandidates.length ? statusCandidates[0] : "";
+
+        if (!resolvedStatus) {
+          if (refundAmount && normalized.amountRupees != null) {
+            if (refundAmount >= normalized.amountRupees - 0.5) {
+              resolvedStatus = "refunded";
+            } else if (refundAmount > 0) {
+              resolvedStatus = "partially_refunded";
+            }
+          } else if (normalized.amountRupees != null && normalized.amountRupees > 0) {
+            resolvedStatus = "paid";
+          } else {
+            resolvedStatus = "unknown";
+          }
+        }
+
+        normalized.paymentStatusResolved = resolvedStatus;
+        normalized.refundAmount = refundAmount != null ? Number(refundAmount) : null;
+        normalized.refundReason = refundReason || null;
+
         return normalized;
       };
 
       const list = snapshot.docs.map((d) => normalizeDoc(d));
-      // Sort by createdAt or paidAt descending if available
       list.sort((a, b) => {
         const ta =
           a.paidAtClient || a.paidAtClient === 0
@@ -390,7 +530,6 @@ const StudentDashboard = () => {
     }
   };
 
-  // When user navigates to reports tab, fetch their payments
   useEffect(() => {
     if (activeTab === "reports") {
       fetchStudentReports();
@@ -398,17 +537,14 @@ const StudentDashboard = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab]);
 
-  // --- New helper: resolve promoter info robustly (uid or uniqueId) ---
   const resolvePromoterInfo = async (mappedPromoter) => {
     if (!mappedPromoter) return { promoterUid: null, promoterUniqueId: null, promoterName: null };
     try {
-      // First try assuming mappedPromoter is a user doc id (uid)
       const promoterDoc = await getDoc(doc(db, "users", mappedPromoter));
       if (promoterDoc.exists()) {
         const d = promoterDoc.data();
         return { promoterUid: promoterDoc.id, promoterUniqueId: d.uniqueId || null, promoterName: d.name || d.email || null };
       }
-      // Otherwise try querying where uniqueId == mappedPromoter
       const q = query(collection(db, "users"), where("uniqueId", "==", mappedPromoter));
       const snap = await getDocs(q);
       if (!snap.empty) {
@@ -422,10 +558,8 @@ const StudentDashboard = () => {
     return { promoterUid: null, promoterUniqueId: null, promoterName: null };
   };
 
-  // Helper: ask server to generate & send receipt (callable preferred, fallback to HTTP)
   const sendReceiptToServer = async ({ paymentDocId, paymentPayload }) => {
     try {
-      // Try callable first
       try {
         const sendReceiptFn = httpsCallable(functions, "sendPaymentReceipt");
         const res = await sendReceiptFn({ paymentId: paymentDocId, payment: paymentPayload });
@@ -433,7 +567,6 @@ const StudentDashboard = () => {
           return { ok: true, via: "callable" };
         }
       } catch (err) {
-        // ignore, try HTTP fallback
         console.warn("sendPaymentReceipt callable failed:", err);
       }
 
@@ -454,16 +587,27 @@ const StudentDashboard = () => {
     }
   };
 
-  // Razorpay Checkout (creates richer payment docs via callable)
+  const refreshUserDoc = async (uid) => {
+    if (!uid) return null;
+    try {
+      const ud = await getDoc(doc(db, "users", uid));
+      if (ud.exists()) return ud.data();
+    } catch (e) {
+      console.warn("refreshUserDoc failed", e);
+    }
+    return null;
+  };
+
   const handleCheckout = async () => {
     if (cart.length === 0) {
       alert("Cart is empty!");
       return;
     }
+    // cartTotal is in rupees already (we maintain it that way)
     const amountInPaise = Math.round(cartTotal * 100);
 
     const options = {
-      key: "rzp_live_RXgt3NNJiZJDob", // <-- Replace with your live Razorpay key if needed
+      key: "rzp_live_RXgt3NNJiZJDob",
       amount: amountInPaise,
       currency: "INR",
       name: "ISP Education",
@@ -471,58 +615,137 @@ const StudentDashboard = () => {
       image: "https://ispeducation.in/logo192.png",
       handler: async function (response) {
         try {
-          // Payment success from Razorpay
           alert("Payment successful! Payment ID: " + response.razorpay_payment_id);
 
-          // resolve promoter info up-front (if any)
+          const uid = auth.currentUser?.uid || null;
+          let refreshedUser = null;
+          if (uid) refreshedUser = await refreshUserDoc(uid);
+
           const mappedPromoter = studentInfo.mappedPromoter || null;
           const promoterResolved = await resolvePromoterInfo(mappedPromoter);
 
-          // --- robust package payload builder (replacement) ---
+          // helper: convert stored numeric values (could be paise or rupees) into rupees (number)
           const amountToRupees = (val) => {
             if (val == null) return 0;
             const n = Number(val);
             if (!Number.isFinite(n)) return 0;
-            // heuristics: treat multiples of 100 or >=1000 as paise
+            // heuristic: if looks like paise then divide, else return as rupees
             if (Math.abs(n) >= 1000) return n / 100;
             if (Math.abs(n) >= 100 && n % 100 === 0) return n / 100;
             return n;
           };
 
+          // helper: parse discount fields that may be percent or rupee
+          const parseDiscountField = (raw, basePrice) => {
+            if (raw == null || raw === "") return { amount: 0, breakdown: "" };
+            // string percent "5%" or number <=100 treated as percent
+            if (typeof raw === "string" && raw.trim().endsWith("%")) {
+              const pct = Number(raw.replace(/%/g, "").trim()) || 0;
+              const amt = (basePrice * pct) / 100;
+              return { amount: Number(amt.toFixed(2)), breakdown: `${pct}%` };
+            }
+            if (typeof raw === "string" && /^-?\d+(\.\d+)?$/.test(raw.trim())) {
+              const num = Number(raw.trim());
+              if (num > 0 && num <= 100) {
+                const amt = (basePrice * num) / 100;
+                return { amount: Number(amt.toFixed(2)), breakdown: `${num}%` };
+              }
+              const amt = amountToRupees(num);
+              return { amount: Number(amt.toFixed(2)), breakdown: `₹${Number(amt.toFixed(2))}` };
+            }
+            if (typeof raw === "number") {
+              if (raw > 0 && raw <= 100) {
+                const amt = (basePrice * raw) / 100;
+                return { amount: Number(amt.toFixed(2)), breakdown: `${raw}%` };
+              }
+              const amt = amountToRupees(raw);
+              return { amount: Number(amt.toFixed(2)), breakdown: `₹${Number(amt.toFixed(2))}` };
+            }
+            const amt = amountToRupees(raw);
+            return { amount: Number(amt.toFixed(2)), breakdown: `₹${Number(amt.toFixed(2))}` };
+          };
+
+          // Build packagesPayload with discount details
           const packagesPayload = cart.map((pkg) => {
-            // canonical package cost used for commission calculation:
-            const rawPackageCost =
-              pkg.packageCost ?? pkg.price ?? pkg.totalPayable ?? pkg.amount ?? pkg.mrp ?? 0;
-            const packageActualCost = Number(amountToRupees(rawPackageCost));
+            // Determine canonical base price (in rupees): prefer packageCost/price/mrp, fallback to totalPayable
+            const rawBaseCandidates = pkg.packageCost ?? pkg.price ?? pkg.mrp ?? pkg.totalPayable ?? 0;
+            const basePrice = Number(amountToRupees(rawBaseCandidates || 0));
 
-            // what student actually paid for this package (could be discounted)
-            const rawPaid = pkg.totalPayable ?? pkg.paidAmount ?? pkg.price ?? pkg.amount ?? 0;
-            const paidPrice = Number(amountToRupees(rawPaid || 0));
+            // read regular + additional discount fields from package master or package object
+            const regRaw = pkg.regularDiscount ?? pkg.regular_discount ?? pkg.regular ?? pkg.regularDiscountPercent ?? pkg.regular_percent ?? 0;
+            const addRaw = pkg.additionalDiscount ?? pkg.additional_discount ?? pkg.additional ?? pkg.additionalDiscountPercent ?? pkg.additional_percent ?? 0;
 
-            // commission percent stored on package doc (try multiple field names)
+            const reg = parseDiscountField(regRaw, basePrice);
+            const add = parseDiscountField(addRaw, basePrice);
+
+            // sum discount amounts (treat as rupee amounts already)
+            const discountAmountCombined = Number(( (reg.amount || 0) + (add.amount || 0) ).toFixed(2));
+
+            // fallback: if pkg.totalPayable exists and basePrice > 0, compute implied discount
+            let paidPriceComputed = null;
+            if (typeof pkg.totalPayable !== "undefined" && pkg.totalPayable !== null && pkg.totalPayable !== "") {
+              paidPriceComputed = Number(amountToRupees(pkg.totalPayable));
+            } else {
+              // computed as basePrice - discounts
+              paidPriceComputed = Number((basePrice - discountAmountCombined).toFixed(2));
+            }
+
+            // now also consider any explicit per-package paidPrice fields
+            let explicitPaidCandidate = null;
+            if (pkg.paidPrice != null) explicitPaidCandidate = Number(amountToRupees(pkg.paidPrice));
+            if (pkg.paidAmount != null && explicitPaidCandidate === null) explicitPaidCandidate = Number(amountToRupees(pkg.paidAmount));
+            if (explicitPaidCandidate != null && Number.isFinite(explicitPaidCandidate) && explicitPaidCandidate > 0) {
+              // If explicit paid price provided, prefer it but still populate discountAmount if missing
+              paidPriceComputed = explicitPaidCandidate;
+              // if discount wasn't provided, compute discount as base - explicit paid
+              if (!discountAmountCombined || discountAmountCombined === 0) {
+                const inferred = Number((basePrice - paidPriceComputed).toFixed(2));
+                // only use inferred if sensible
+                if (inferred >= 0) {
+                  // we'll set discountAmountCombined to inferred below in totals
+                }
+              }
+            }
+
+            // Build human readable discount breakdown
+            const breakdownParts = [];
+            if (reg.amount && reg.amount > 0) breakdownParts.push(`regular ${reg.breakdown}`);
+            if (add.amount && add.amount > 0) breakdownParts.push(`additional ${add.breakdown}`);
+            // also include explicit per-package discount fields if present (pkg.discount, pkg.discountAmount)
+            const explicitPkgDiscountRaw = pkg.discount ?? pkg.discountAmount ?? pkg.discount_amount;
+            if (explicitPkgDiscountRaw != null && explicitPkgDiscountRaw !== "") {
+              const ed = parseDiscountField(explicitPkgDiscountRaw, basePrice);
+              if (ed.amount > 0) {
+                breakdownParts.push(`pkg ${ed.breakdown}`);
+              }
+            }
+
+            const discountBreakdownString = breakdownParts.join(" + ") || "";
+
+            // price fields normalized:
+            const packageCost = Number(basePrice || 0);
+            const discountAmount = Number(discountAmountCombined || 0);
+            const paidPrice = Number(paidPriceComputed || 0);
+
+            // commission logic (unchanged)
             const commissionPercent = safeNum(
-              pkg.commission ??
-              pkg.promoterCommission ??
-              pkg.commissionPercent ??
-              pkg.commission_pct ??
-              pkg.promoter_commission_percent ??
-              0
+              pkg.commission ?? pkg.promoterCommission ?? pkg.commissionPercent ?? pkg.commission_pct ?? pkg.promoter_commission_percent ?? 0
             );
 
-            // explicit commission amount if package stored it (handle paise)
             let explicitCommissionAmount =
               pkg.commissionAmount ?? pkg.commission_total ?? pkg.commissionTotal ?? pkg.promoterCommissionAmount ?? 0;
             explicitCommissionAmount = Number(explicitCommissionAmount || 0);
-            if (explicitCommissionAmount >= 100 && packageActualCost < 100) {
+            if (explicitCommissionAmount >= 100 && packageCost < 100) {
               explicitCommissionAmount = explicitCommissionAmount / 100;
             }
 
-            // final commission amount: explicit takes precedence, else computed from packageActualCost * percent
             let commissionAmount = 0;
             if (explicitCommissionAmount > 0) {
               commissionAmount = Number(Math.round((explicitCommissionAmount + Number.EPSILON) * 100) / 100);
-            } else if (packageActualCost > 0 && commissionPercent > 0) {
-              commissionAmount = Number(Math.round(((packageActualCost * commissionPercent) / 100 + Number.EPSILON) * 100) / 100);
+            } else if (packageCost > 0 && commissionPercent > 0) {
+              commissionAmount = Number(
+                Math.round(((packageCost * commissionPercent) / 100 + Number.EPSILON) * 100) / 100
+              );
             } else {
               commissionAmount = 0;
             }
@@ -534,55 +757,59 @@ const StudentDashboard = () => {
               subject: pkg.subject || "",
               subtopic: pkg.subtopic || "",
               chapter: pkg.chapter || "",
-              // canonical package cost used for commission calculation (in rupees)
-              packageCost: Number(packageActualCost || 0),
-              // what the student actually paid for this item (in rupees)
-              paidPrice: Number(paidPrice || 0),
-              // commission details read from package (percent + amount)
+              packageCost: Number(packageCost || 0), // rupees
+              discountAmount: Number(discountAmount || 0), // rupees (regular+additional)
+              discountBreakdown: discountBreakdownString || "",
+              paidPrice: Number(paidPrice || 0), // rupees after discounts (or explicit)
               commissionPercent: Number(commissionPercent || 0),
               commissionAmount: Number(commissionAmount || 0),
-              // legacy fields kept
               price: Number(amountToRupees(pkg.price ?? pkg.packageCost ?? pkg.totalPayable ?? 0)),
               totalPayable: Number(amountToRupees(pkg.totalPayable ?? pkg.paidAmount ?? pkg.price ?? 0)),
             };
           });
 
-          // commissionTotal calculated from packageCost (as requested)
+          // Totals
+          const packageTotalCost = packagesPayload.reduce((s, p) => s + Number(p.packageCost || 0), 0);
+          const totalDiscount = packagesPayload.reduce((s, p) => s + Number(p.discountAmount || 0), 0);
+          // paidAmount: prefer cartTotal (client-side computed) but also compute as sum of per-package paidPrice
+          const paidFromPackages = packagesPayload.reduce((s, p) => s + Number(p.paidPrice || 0), 0);
+          const paidAmountCombined = Number(Math.round((paidFromPackages + Number.EPSILON) * 100) / 100);
+          const finalPaidAmount = Number(Math.round((cartTotal + Number.EPSILON) * 100) / 100) || paidAmountCombined;
+
           const commissionTotal = packagesPayload.reduce((s, p) => s + safeNum(p.commissionAmount), 0);
 
-          // total package cost (sum of canonical package costs) — useful to admins
-          const packageTotalCost = packagesPayload.reduce((s, p) => s + safeNum(p.packageCost), 0);
+          const finalStudentName = (studentInfo.name && studentInfo.name !== "Student") ? studentInfo.name : (refreshedUser?.name || auth.currentUser?.displayName || "");
+          const finalStudentPhone = studentInfo.phone || refreshedUser?.phone || auth.currentUser?.phoneNumber || "";
 
-          // Build final payload (shape accepted by createPaymentRecord Cloud Function)
           const callablePayload = {
             paymentId: response.razorpay_payment_id,
             packages: packagesPayload,
-            // what student actually paid (sum of paidPrice or cartTotal)
-            paidAmount: Number(cartTotal),
-            amount: Number(cartTotal),
-            totalAmount: Number(cartTotal),
-            packageTotalCost: Number(packageTotalCost),
+            paidAmount: Number(finalPaidAmount),
+            amount: Number(finalPaidAmount),
+            totalAmount: Number(finalPaidAmount),
+            packageTotalCost: Number(Math.round((packageTotalCost + Number.EPSILON) * 100) / 100),
+            totalDiscount: Number(Math.round((totalDiscount + Number.EPSILON) * 100) / 100),
             commissionTotal: Number(Math.round((commissionTotal + Number.EPSILON) * 100) / 100),
-            mappedPromoter: studentInfo.mappedPromoter || null, // pass uniqueId or uid if set on user doc
+            mappedPromoter: studentInfo.mappedPromoter || null,
             promoterUid: promoterResolved?.promoterUid || null,
+            promoterDocId: promoterResolved?.promoterUid || null,
             promoterUniqueId: promoterResolved?.promoterUniqueId || null,
             promoterName: promoterResolved?.promoterName || null,
             createPerPackage: false,
             source: "razorpay_checkout_client",
-
-            // --- NEW: include student contact info so server can generate & send receipt automatically ---
-            studentId: auth.currentUser?.uid || null,
-            studentName: studentInfo.name || "",
+            studentId: uid || null,
+            studentName: finalStudentName || "",
             studentEmail: auth.currentUser?.email || "",
-            studentPhone: studentInfo.phone || auth.currentUser?.phoneNumber || "",
+            studentPhone: finalStudentPhone || "",
           };
 
-          // Try callables (prefer server-side logic)
+          delete callablePayload.pendingAmount;
+          delete callablePayload.teamCount;
+
           let saved = false;
           let savedPaymentDocId = null;
           let lastErr = null;
 
-          // Helper to interpret callable result shapes
           const interpretCallableResult = (res) => {
             if (!res) return null;
             const d = res.data || {};
@@ -592,12 +819,10 @@ const StudentDashboard = () => {
             if (d.success && Array.isArray(d.paymentDocIds) && d.paymentDocIds.length) {
               return d.paymentDocIds[0];
             }
-            // fallback: maybe function returned { success: true, paymentDocId: "..." }
             if (d.success && (d.paymentDocId || d.paymentId)) return d.paymentDocId || d.paymentId;
             return null;
           };
 
-          // 1) createPaymentRecord
           try {
             const createPaymentRecord = httpsCallable(functions, "createPaymentRecord");
             const res = await createPaymentRecord(callablePayload);
@@ -612,7 +837,6 @@ const StudentDashboard = () => {
             lastErr = err;
           }
 
-          // 2) adminCreatePayment (only if first failed)
           if (!saved) {
             try {
               const adminCreatePayment = httpsCallable(functions, "adminCreatePayment");
@@ -629,45 +853,50 @@ const StudentDashboard = () => {
             }
           }
 
-          // 3) Fallback: client-side write to /payments (only if callables failed)
           if (!saved) {
             try {
-              // We will store one document that contains the full payload (packages array inside)
-              // Build fallback payload and include legacy single-package top-level fields when cart has 1 item
+              // fallback doc with the fields we want to capture
               const fallbackDocPayload = {
-                studentId: auth.currentUser?.uid,
-                studentName: studentInfo.name || "",
+                studentId: uid,
+                studentName: finalStudentName || "",
                 email: auth.currentUser?.email || "",
-                phone: studentInfo.phone || auth.currentUser?.phoneNumber || "",
+                phone: finalStudentPhone || "",
                 packages: packagesPayload,
-                amount: Number(cartTotal),
-                paidAmount: Number(cartTotal),
+                amount: Number(finalPaidAmount),
+                paidAmount: Number(finalPaidAmount),
                 paymentId: response.razorpay_payment_id,
                 paymentMethod: "razorpay",
                 paymentStatus: "paid",
                 settlementStatus: "pending",
+                promoterDocId: promoterResolved?.promoterUid || null,
                 promoterUid: promoterResolved?.promoterUid || null,
                 promoterUniqueId: promoterResolved?.promoterUniqueId || null,
                 promoterName: promoterResolved?.promoterName || null,
                 commissionTotal: Number(Math.round((commissionTotal + Number.EPSILON) * 100) / 100),
                 commissionPaid: false,
                 promoterPaid: false,
-                packageTotalCost: Number(packageTotalCost),
+                packageTotalCost: Number(Math.round((packageTotalCost + Number.EPSILON) * 100) / 100),
+                totalDiscount: Number(Math.round((totalDiscount + Number.EPSILON) * 100) / 100),
+                paidAmountCombined: Number(finalPaidAmount),
                 createdAt: serverTimestamp(),
                 paidAt: serverTimestamp(),
                 source: "razorpay_checkout_client_fallback",
                 gatewayRaw: { raw: response },
               };
 
-              // if only one package, set legacy top-level package fields to help older dashboards
               if (packagesPayload.length === 1) {
                 const p0 = packagesPayload[0];
                 fallbackDocPayload.packageId = p0.packageId || p0.id || null;
                 fallbackDocPayload.packageName = p0.packageName || null;
                 fallbackDocPayload.packageCost = p0.packageCost || null;
+                fallbackDocPayload.discountAmount = p0.discountAmount || null;
+                fallbackDocPayload.paidPrice = p0.paidPrice || null;
                 fallbackDocPayload.commissionPercent = p0.commissionPercent || null;
                 fallbackDocPayload.commissionAmount = p0.commissionAmount || null;
               }
+
+              delete fallbackDocPayload.pendingAmount;
+              delete fallbackDocPayload.teamCount;
 
               const pRef = await addDoc(collection(db, "payments"), fallbackDocPayload);
               console.log("Fallback: saved payments doc client-side:", pRef.id);
@@ -684,33 +913,31 @@ const StudentDashboard = () => {
             alert(
               "Payment succeeded but saving the record failed. Ensure your callable function (createPaymentRecord or adminCreatePayment) is deployed and that Firestore rules allow the write. Check console for details."
             );
-            // clear cart locally (so user doesn't try paying twice)
             setCart([]);
             setActiveTab("reports");
             if (activeTab === "reports") fetchStudentReports();
             return;
           }
 
-          // If saved, attempt to trigger receipt generation (server should email + whatsapp)
           try {
-            // ensure payload we send includes student contact info
             const payloadForReceipt = {
               ...callablePayload,
               savedPaymentDocId,
-              // also pass canonical fallback fields if need be
-              studentId: auth.currentUser?.uid || null,
-              studentName: studentInfo.name || "",
+              studentId: uid || null,
+              studentName: finalStudentName || "",
               studentEmail: auth.currentUser?.email || "",
-              studentPhone: studentInfo.phone || auth.currentUser?.phoneNumber || "",
+              studentPhone: finalStudentPhone || "",
               paymentDocId: savedPaymentDocId,
             };
+            delete payloadForReceipt.pendingAmount;
+            delete payloadForReceipt.teamCount;
+
             const receiptRes = await sendReceiptToServer({ paymentDocId: savedPaymentDocId, paymentPayload: payloadForReceipt });
             console.log("sendReceiptToServer result:", receiptRes);
           } catch (e) {
             console.warn("Receipt sending attempt failed:", e);
           }
 
-          // On success: clear cart and refresh reports (delay so Firestore triggers finish)
           setCart([]);
           setActiveTab("reports");
           setTimeout(() => fetchStudentReports(), 900);
@@ -722,7 +949,7 @@ const StudentDashboard = () => {
       prefill: {
         name: studentInfo.name,
         email: auth.currentUser?.email || "",
-        contact: "",
+        contact: studentInfo.phone || "",
       },
       notes: {
         cart: JSON.stringify(cart.map((c) => ({ id: c.id, name: c.packageName || c.concept })) || []),
@@ -750,16 +977,14 @@ const StudentDashboard = () => {
         display: "flex",
         gap: "20px",
         minHeight: "100vh",
-        background: "linear-gradient(135deg, #1d2671, #c33764)",
-        paddingBottom: "120px", // Ensure content not hidden by fixed bottom buttons on mobile
+        background: "transparent", // body holds the gradient to avoid white gap on mobile
+        paddingBottom: "140px",
       }}
     >
-      {/* Main Content */}
       <div style={{ flex: 3, padding: "20px" }}>
         <div className="dashboard-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", color: "#fff" }}>
           <h1>Welcome, {studentInfo.name}!</h1>
 
-          {/* Tab controls (Shop / Reports) */}
           <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
             <button
               onClick={() => setActiveTab("shop")}
@@ -800,61 +1025,23 @@ const StudentDashboard = () => {
           </div>
         </div>
 
-        {/* Student profile (class & syllabus) */}
-        <div
-          style={{
-            marginTop: "12px",
-            display: "flex",
-            gap: "12px",
-            alignItems: "center",
-            color: "#fff",
-            flexWrap: "wrap",
-          }}
-        >
-          <div
-            style={{
-              background: "#ffffff12",
-              padding: "10px 14px",
-              borderRadius: "8px",
-              minWidth: "160px",
-              display: "flex",
-              flexDirection: "column",
-            }}
-          >
+        <div style={{ marginTop: "12px", display: "flex", gap: "12px", alignItems: "center", color: "#fff", flexWrap: "wrap" }}>
+          <div style={{ background: "#ffffff12", padding: "10px 14px", borderRadius: "8px", minWidth: "160px", display: "flex", flexDirection: "column" }}>
             <small style={{ color: "#cbd5e1", fontSize: "12px" }}>Name</small>
             <strong style={{ fontSize: "15px" }}>{studentInfo.name || "Student"}</strong>
           </div>
 
-          <div
-            style={{
-              background: "#ffffff12",
-              padding: "10px 14px",
-              borderRadius: "8px",
-              minWidth: "120px",
-              display: "flex",
-              flexDirection: "column",
-            }}
-          >
+          <div style={{ background: "#ffffff12", padding: "10px 14px", borderRadius: "8px", minWidth: "120px", display: "flex", flexDirection: "column" }}>
             <small style={{ color: "#cbd5e1", fontSize: "12px" }}>Class</small>
             <strong style={{ fontSize: "15px" }}>{studentInfo.classGrade || "—"}</strong>
           </div>
 
-          <div
-            style={{
-              background: "#ffffff12",
-              padding: "10px 14px",
-              borderRadius: "8px",
-              minWidth: "140px",
-              display: "flex",
-              flexDirection: "column",
-            }}
-          >
+          <div style={{ background: "#ffffff12", padding: "10px 14px", borderRadius: "8px", minWidth: "140px", display: "flex", flexDirection: "column" }}>
             <small style={{ color: "#cbd5e1", fontSize: "12px" }}>Syllabus</small>
             <strong style={{ fontSize: "15px" }}>{studentInfo.syllabus || "—"}</strong>
           </div>
         </div>
 
-        {/* If Reports tab active -> show reports UI */}
         {activeTab === "reports" && (
           <div style={{ marginTop: 20, background: "#ffffff14", padding: 16, borderRadius: 10 }}>
             <h2 style={{ color: "#fff", marginBottom: 12 }}>📑 My Payment Reports</h2>
@@ -865,36 +1052,71 @@ const StudentDashboard = () => {
               <p style={{ color: "#fff" }}>No payment records found.</p>
             ) : (
               <div style={{ overflowX: "auto" }}>
-                <table style={{ width: "100%", borderCollapse: "collapse", color: "#fff", minWidth: 680 }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", color: "#fff", minWidth: 900 }}>
                   <thead>
                     <tr style={{ textAlign: "left", borderBottom: "1px solid rgba(255,255,255,0.06)" }}>
                       <th style={{ padding: "8px 6px" }}>Package</th>
                       <th style={{ padding: "8px 6px" }}>Subject</th>
-                      <th style={{ padding: "8px 6px" }}>Amount (₹)</th>
-                      <th style={{ padding: "8px 6px" }}>Date</th>
+                      <th style={{ padding: "8px 6px" }}>Cost (₹)</th>
+                      <th style={{ padding: "8px 6px" }}>Discount (₹)</th>
+                      <th style={{ padding: "8px 6px" }}>Paid (₹)</th>
                       <th style={{ padding: "8px 6px" }}>Status</th>
-                      <th style={{ padding: "8px 6px" }}>Promoter Approved</th>
+                      <th style={{ padding: "8px 6px" }}>Refund Info</th>
+                      <th style={{ padding: "8px 6px" }}>Date</th>
                       <th style={{ padding: "8px 6px" }}>Payment ID</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {studentReports.map((r) => (
-                      <tr key={r.id} style={{ borderBottom: "1px solid rgba(255,255,255,0.04)" }}>
-                        <td style={{ padding: "10px 6px", color: "#e6eef8" }}>
-                          {r.packages && r.packages.length ? r.packages.map(p => (typeof p.packageName === "string" ? p.packageName : String(p.packageName))).join(", ") : r.packageName || "—"}
-                        </td>
-                        <td style={{ padding: "10px 6px", color: "#e6eef8" }}>{r.subject || (r.packages && r.packages[0]?.subject) || "—"}</td>
-                        <td style={{ padding: "10px 6px", color: "#e6eef8", fontWeight: 700 }}>
-                          {Number(r.amountRupees != null ? r.amountRupees : (r.amount != null ? r.amount : r.totalPackageCost || r.paidAmount || 0)).toFixed(2)}
-                        </td>
-                        <td style={{ padding: "10px 6px", color: "#e6eef8" }}>
-                          {r.paidAtClient ? new Date(r.paidAtClient).toLocaleString("en-IN") : r.paidAt ? (r.paidAt.seconds ? new Date(r.paidAt.seconds * 1000).toLocaleString("en-IN") : (new Date(r.paidAt).toLocaleString("en-IN"))) : r.createdAtClient ? new Date(r.createdAtClient).toLocaleString("en-IN") : "—"}
-                        </td>
-                        <td style={{ padding: "10px 6px", color: r.settlementStatus === "settled" ? "#bbf7d0" : "#fda4af", fontWeight: 700 }}>{r.settlementStatus || r.paymentStatus || "—"}</td>
-                        <td style={{ padding: "10px 6px", color: "#e6eef8" }}>{r.promoterApproved ? "✅" : (r.promoterUid || r.promoterUniqueId ? "❌" : "—")}</td>
-                        <td style={{ padding: "10px 6px", color: "#e6eef8", fontSize: 12 }}>{r.paymentId || r.paymentID || r.id || "—"}</td>
-                      </tr>
-                    ))}
+                    {studentReports.map((r) => {
+                      const packageNames = r.packages && r.packages.length ? r.packages.map(p => (typeof p.packageName === "string" ? p.packageName : String(p.packageName))).join(", ") : r.packageName || "—";
+                      const subjectText = r.subject || (r.packages && r.packages[0]?.subject) || "—";
+                      const cost = typeof r.reportCost === "number" ? r.reportCost : (r.packageTotalCost ?? r.totalPackageCost ?? null);
+                      const paid = typeof r.reportPaid === "number" ? r.reportPaid : (r.amountRupees ?? r.amount ?? r.paidAmount ?? null);
+                      const discount = typeof r.reportDiscount === "number" ? r.reportDiscount : (cost != null && paid != null ? Number((cost - paid).toFixed(2)) : null);
+
+                      const displayCost = cost != null && Number.isFinite(Number(cost)) ? Number(cost).toFixed(2) : (r.amountRupees != null ? Number(r.amountRupees).toFixed(2) : "0.00");
+                      const displayPaid = paid != null && Number.isFinite(Number(paid)) ? Number(paid).toFixed(2) : "0.00";
+                      const displayDiscount = discount != null && Number.isFinite(Number(discount)) ? Number(discount).toFixed(2) : "0.00";
+
+                      const displayDate = r.paidAtClient
+                        ? new Date(r.paidAtClient).toLocaleString("en-IN")
+                        : r.paidAt
+                        ? (r.paidAt.seconds ? new Date(r.paidAt.seconds * 1000).toLocaleString("en-IN") : new Date(r.paidAt).toLocaleString("en-IN"))
+                        : r.createdAtClient
+                        ? new Date(r.createdAtClient).toLocaleString("en-IN")
+                        : "—";
+
+                      // human-readable payment status
+                      const st = (r.paymentStatusResolved || r.paymentStatus || r.settlementStatus || "").toString().toLowerCase();
+                      let displayStatus = "Paid";
+                      if (st.includes("refund") || st.includes("refunded")) displayStatus = "Refunded";
+                      else if (st.includes("part") || st.includes("partial")) displayStatus = "Partially Refunded";
+                      else if (st.includes("fail") || st.includes("failed")) displayStatus = "Failed";
+                      else if (!paid || Number(paid) === 0) displayStatus = "Unpaid";
+
+                      // refund info text
+                      let refundInfo = "—";
+                      if (r.refundAmount != null && Number(r.refundAmount) > 0) {
+                        refundInfo = `₹${Number(r.refundAmount).toFixed(2)}`;
+                        if (r.refundReason) refundInfo += ` — ${r.refundReason}`;
+                      } else if (r.refundReason) {
+                        refundInfo = r.refundReason;
+                      }
+
+                      return (
+                        <tr key={r.id} style={{ borderBottom: "1px solid rgba(255,255,255,0.04)" }}>
+                          <td style={{ padding: "10px 6px", color: "#e6eef8" }}>{packageNames}</td>
+                          <td style={{ padding: "10px 6px", color: "#e6eef8" }}>{subjectText}</td>
+                          <td style={{ padding: "10px 6px", color: "#e6eef8", fontWeight: 700 }}>{displayCost}</td>
+                          <td style={{ padding: "10px 6px", color: "#e6eef8" }}>{displayDiscount}</td>
+                          <td style={{ padding: "10px 6px", color: "#e6eef8", fontWeight: 700 }}>{displayPaid}</td>
+                          <td style={{ padding: "10px 6px", color: "#e6eef8" }}>{displayStatus}</td>
+                          <td style={{ padding: "10px 6px", color: "#e6eef8", fontSize: 12 }}>{refundInfo}</td>
+                          <td style={{ padding: "10px 6px", color: "#e6eef8" }}>{displayDate}</td>
+                          <td style={{ padding: "10px 6px", color: "#e6eef8", fontSize: 12 }}>{r.paymentId || r.paymentID || r.id || "—"}</td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -902,26 +1124,11 @@ const StudentDashboard = () => {
           </div>
         )}
 
-        {/* Filters (shown only when shop view is active) */}
         {activeTab === "shop" && (
           <>
-            {/* Filters */}
-            <div
-              style={{
-                marginTop: "20px",
-                background: "#ffffff22",
-                padding: "15px",
-                borderRadius: "10px",
-                display: "grid",
-                gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
-                gap: "15px",
-              }}
-            >
-              {/* Package Type */}
+            <div style={{ marginTop: "20px", background: "#ffffff22", padding: "15px", borderRadius: "10px", display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: "15px" }}>
               <div>
-                <label className="lbl" style={{ display: "block", marginBottom: "6px", color: "#fff" }}>
-                  Package Type
-                </label>
+                <label className="lbl" style={{ display: "block", marginBottom: "6px", color: "#fff" }}>Package Type</label>
                 <select
                   className="sel"
                   value={selectedType}
@@ -936,19 +1143,14 @@ const StudentDashboard = () => {
                 >
                   <option value="">— Select Type —</option>
                   {packageTypes.map((t) => (
-                    <option key={t} value={t}>
-                      {t}
-                    </option>
+                    <option key={t} value={t}>{t}</option>
                   ))}
                 </select>
               </div>
 
-              {/* Package Name */}
               {selectedType && packageNameOptions.length > 0 && (
                 <div>
-                  <label className="lbl" style={{ display: "block", marginBottom: "6px", color: "#fff" }}>
-                    Package Name
-                  </label>
+                  <label className="lbl" style={{ display: "block", marginBottom: "6px", color: "#fff" }}>Package Name</label>
                   <select
                     className="sel"
                     value={selectedPackageName}
@@ -961,21 +1163,14 @@ const StudentDashboard = () => {
                     style={{ width: "100%", padding: "8px", borderRadius: "6px" }}
                   >
                     <option value="">— Select Package —</option>
-                    {packageNameOptions.map((n) => (
-                      <option key={n} value={n}>
-                        {n}
-                      </option>
-                    ))}
+                    {packageNameOptions.map((n) => <option key={n} value={n}>{n}</option>)}
                   </select>
                 </div>
               )}
 
-              {/* Concept-based filters */}
               {isConceptPackageName(selectedPackageName) && subjectOptions.length > 0 && (
                 <div>
-                  <label className="lbl" style={{ display: "block", marginBottom: "6px", color: "#fff" }}>
-                    Subject
-                  </label>
+                  <label className="lbl" style={{ display: "block", marginBottom: "6px", color: "#fff" }}>Subject</label>
                   <select
                     className="sel"
                     value={selectedSubject}
@@ -987,20 +1182,14 @@ const StudentDashboard = () => {
                     style={{ width: "100%", padding: "8px", borderRadius: "6px" }}
                   >
                     <option value="">— Select Subject —</option>
-                    {subjectOptions.map((s) => (
-                      <option key={s} value={s}>
-                        {s}
-                      </option>
-                    ))}
+                    {subjectOptions.map((s) => <option key={s} value={s}>{s}</option>)}
                   </select>
                 </div>
               )}
 
               {isConceptPackageName(selectedPackageName) && selectedSubject && subtopicOptions.length > 0 && (
                 <div>
-                  <label className="lbl" style={{ display: "block", marginBottom: "6px", color: "#fff" }}>
-                    Subtopic
-                  </label>
+                  <label className="lbl" style={{ display: "block", marginBottom: "6px", color: "#fff" }}>Subtopic</label>
                   <select
                     className="sel"
                     value={selectedSubtopic}
@@ -1011,20 +1200,14 @@ const StudentDashboard = () => {
                     style={{ width: "100%", padding: "8px", borderRadius: "6px" }}
                   >
                     <option value="">— Select Subtopic —</option>
-                    {subtopicOptions.map((s) => (
-                      <option key={s} value={s}>
-                        {s}
-                      </option>
-                    ))}
+                    {subtopicOptions.map((s) => <option key={s} value={s}>{s}</option>)}
                   </select>
                 </div>
               )}
 
               {isConceptPackageName(selectedPackageName) && selectedSubtopic && chapterOptions.length > 0 && (
                 <div>
-                  <label className="lbl" style={{ display: "block", marginBottom: "6px", color: "#fff" }}>
-                    Chapter
-                  </label>
+                  <label className="lbl" style={{ display: "block", marginBottom: "6px", color: "#fff" }}>Chapter</label>
                   <select
                     className="sel"
                     value={selectedChapter}
@@ -1032,46 +1215,26 @@ const StudentDashboard = () => {
                     style={{ width: "100%", padding: "8px", borderRadius: "6px" }}
                   >
                     <option value="">— Select Chapter —</option>
-                    {chapterOptions.map((c) => (
-                      <option key={c} value={c}>
-                        {c}
-                      </option>
-                    ))}
+                    {chapterOptions.map((c) => <option key={c} value={c}>{c}</option>)}
                   </select>
                 </div>
               )}
             </div>
 
-            {/* Cards */}
             {selectedPackageName && (
               <>
                 <h2 style={{ marginTop: 20, color: "white" }}>{selectedType === "Interactive Class" ? "Available Classes" : "Available Tests"}</h2>
                 {conceptCards.length === 0 ? (
-                  <p style={{ color: "#fff" }}>
-                    {isConceptPackageName(selectedPackageName) ? "Select Subject → Subtopic → Chapter to view items." : "No items found."}
-                  </p>
+                  <p style={{ color: "#fff" }}>{isConceptPackageName(selectedPackageName) ? "Select Subject → Subtopic → Chapter to view items." : "No items found."}</p>
                 ) : (
-                  <div
-                    className="packages-grid"
-                    style={{
-                      display: "grid",
-                      gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))",
-                      gap: "16px",
-                      marginTop: "20px",
-                    }}
-                  >
+                  <div className="packages-grid" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: "16px", marginTop: "20px" }}>
                     {conceptCards.map((pkg) => {
                       const subj = normalizeSubject(pkg.subject) || "Default";
                       const { basePrice, finalPrice, d1, d2 } = computeFinalPrice(pkg);
-
-                      // compute duration & rates
                       const durationNum = parseFloat(pkg.duration) || 0;
                       const rateBefore = durationNum > 0 ? basePrice / durationNum : null;
                       const rateAfter = durationNum > 0 ? finalPrice / durationNum : null;
-
-                      // freebies may be a string or array in your DB; normalize to string
                       const freebiesText = Array.isArray(pkg.freebies) ? pkg.freebies.join(", ") : (pkg.freebies || "").toString();
-
                       const totalDiscount = Math.round((d1 || 0) + (d2 || 0));
 
                       return (
@@ -1093,31 +1256,7 @@ const StudentDashboard = () => {
                             overflow: "hidden",
                           }}
                         >
-                          {/* PRICE STICKER — bottom-left (fixed) */}
-                          <div
-                            className="price-sticker"
-                            style={{
-                              position: "absolute",
-                              bottom: 16,
-                              left: 16,
-                              transform: "none",
-                              background: "#05060A",
-                              color: "#b7ffd6",
-                              padding: "8px 10px",
-                              borderRadius: "10px",
-                              fontSize: "12px",
-                              fontWeight: 700,
-                              zIndex: 6,
-                              boxShadow: "0 8px 24px rgba(0,255,150,0.06), 0 4px 10px rgba(0,0,0,0.2)",
-                              border: "1px solid rgba(0,255,150,0.12)",
-                              display: "flex",
-                              flexDirection: "column",
-                              alignItems: "flex-start",
-                              lineHeight: 1.05,
-                              minWidth: 120,
-                            }}
-                            aria-hidden
-                          >
+                          <div className="price-sticker" style={{ position: "absolute", bottom: 16, left: 16, transform: "none", background: "#05060A", color: "#b7ffd6", padding: "8px 10px", borderRadius: "10px", fontSize: "12px", fontWeight: 700, zIndex: 6, boxShadow: "0 8px 24px rgba(0,255,150,0.06), 0 4px 10px rgba(0,0,0,0.2)", border: "1px solid rgba(0,255,150,0.12)", display: "flex", flexDirection: "column", alignItems: "flex-start", lineHeight: 1.05, minWidth: 120 }} aria-hidden>
                             <span style={{ fontSize: "11px", color: "#9ca3af", textDecoration: rateBefore ? "line-through" : "none", marginBottom: 4 }}>
                               {rateBefore !== null ? `Was ₹${Number(rateBefore).toFixed(2)}/hr` : "Was —"}
                             </span>
@@ -1126,88 +1265,23 @@ const StudentDashboard = () => {
                             </span>
                           </div>
 
-                          {/* Discount badge */}
                           {totalDiscount > 0 && (
-                            <div
-                              style={{
-                                position: "absolute",
-                                top: "10px",
-                                right: "10px",
-                                background: totalDiscount >= 40 ? "#e11d48" : totalDiscount >= 20 ? "#f97316" : "#16a34a",
-                                color: "#fff",
-                                padding: "4px 8px",
-                                borderRadius: "6px",
-                                fontSize: "12px",
-                                fontWeight: "700",
-                                boxShadow: "0 2px 6px rgba(0,0,0,0.12)",
-                                zIndex: 7,
-                              }}
-                            >
+                            <div style={{ position: "absolute", top: "10px", right: "10px", background: totalDiscount >= 40 ? "#e11d48" : totalDiscount >= 20 ? "#f97316" : "#16a34a", color: "#fff", padding: "4px 8px", borderRadius: "6px", fontSize: "12px", fontWeight: "700", boxShadow: "0 2px 6px rgba(0,0,0,0.12)", zIndex: 7 }}>
                               {totalDiscount}% OFF
                             </div>
                           )}
 
-                          <div
-                            className="zoom-card-inner"
-                            style={{
-                              textAlign: "center",
-                              zIndex: 2,
-                              paddingBottom: 72 /* make room for sticker + add button so they don't overlap content */,
-                            }}
-                          >
-                            <img
-                              src={subjectImages[subj] || subjectImages.Default}
-                              alt={subj}
-                              style={{
-                                width: "80px",
-                                height: "80px",
-                                objectFit: "contain",
-                                marginBottom: "8px",
-                                borderRadius: "10px",
-                                backgroundColor: "rgba(255,255,255,0.05)",
-                              }}
-                            />
-                            <h3 style={{ fontSize: "16px", fontWeight: "600", color: "#222", marginBottom: "4px" }}>
-                              {pkg.concept || pkg.packageName}
-                            </h3>
-                            <span style={{ display: "block", fontSize: "13px", marginBottom: "10px", color: "#555" }}>
-                              {subj} {pkg.subtopic ? "→ " + pkg.subtopic + " → " : ""}{pkg.chapter}
-                            </span>
+                          <div className="zoom-card-inner" style={{ textAlign: "center", zIndex: 2, paddingBottom: 72 }}>
+                            <img src={subjectImages[subj] || subjectImages.Default} alt={subj} style={{ width: "80px", height: "80px", objectFit: "contain", marginBottom: "8px", borderRadius: "10px", backgroundColor: "rgba(255,255,255,0.05)" }} />
+                            <h3 style={{ fontSize: "16px", fontWeight: "600", color: "#222", marginBottom: "4px" }}>{pkg.concept || pkg.packageName}</h3>
+                            <span style={{ display: "block", fontSize: "13px", marginBottom: "10px", color: "#555" }}>{subj} {pkg.subtopic ? "→ " + pkg.subtopic + " → " : ""}{pkg.chapter}</span>
 
-                            {/* Course Details */}
-                            <div
-                              style={{
-                                textAlign: "left",
-                                fontSize: "13px",
-                                color: "#444",
-                                marginBottom: "10px",
-                                lineHeight: "1.4em",
-                              }}
-                            >
-                              {/* Use available fields: courseDetails, description, duration, perHour; fallbacks if not present */}
-                              {pkg.courseDetails && (
-                                <p style={{ margin: "4px 0" }}>
-                                  <b>Course:</b> {pkg.courseDetails}
-                                </p>
-                              )}
-                              {!pkg.courseDetails && pkg.description && (
-                                <p style={{ margin: "4px 0" }}>
-                                  <b>About:</b> {pkg.description.length > 80 ? pkg.description.slice(0, 80) + "..." : pkg.description}
-                                </p>
-                              )}
-                              {pkg.duration && (
-                                <p style={{ margin: "4px 0" }}>
-                                  <b>Duration:</b> {pkg.duration} hrs
-                                </p>
-                              )}
-                              {pkg.perHour && (
-                                <p style={{ margin: "4px 0", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                                  <span><b>Rate (stored):</b></span>
-                                  <span style={{ background: "#f3f4f6", padding: "4px 8px", borderRadius: 6 }}>₹{pkg.perHour}/hr</span>
-                                </p>
-                              )}
+                            <div style={{ textAlign: "left", fontSize: "13px", color: "#444", marginBottom: "10px", lineHeight: "1.4em" }}>
+                              {pkg.courseDetails && (<p style={{ margin: "4px 0" }}><b>Course:</b> {pkg.courseDetails}</p>)}
+                              {!pkg.courseDetails && pkg.description && (<p style={{ margin: "4px 0" }}><b>About:</b> {pkg.description.length > 80 ? pkg.description.slice(0, 80) + "..." : pkg.description}</p>)}
+                              {pkg.duration && (<p style={{ margin: "4px 0" }}><b>Duration:</b> {pkg.duration} hrs</p>)}
+                              {pkg.perHour && (<p style={{ margin: "4px 0", display: "flex", justifyContent: "space-between", alignItems: "center" }}><span><b>Rate (stored):</b></span><span style={{ background: "#f3f4f6", padding: "4px 8px", borderRadius: 6 }}>₹{pkg.perHour}/hr</span></p>)}
 
-                              {/* Freebies */}
                               {freebiesText && freebiesText.trim() !== "" && (
                                 <p style={{ margin: "6px 0 0 0", color: "#0f172a", background: "#f1f5f9", padding: "6px", borderRadius: "6px" }}>
                                   <strong style={{ marginRight: 6 }}>🎁 Freebies:</strong>
@@ -1216,7 +1290,6 @@ const StudentDashboard = () => {
                               )}
                             </div>
 
-                            {/* Price Section (inside card body, not the sticker) */}
                             <div style={{ textAlign: "left", marginTop: "8px" }}>
                               <p style={{ margin: "2px 0" }}>
                                 <b>Price:</b>{" "}
@@ -1224,42 +1297,18 @@ const StudentDashboard = () => {
                                   ₹{basePrice.toFixed(2)}
                                 </span>
                               </p>
-                              {(d1 || d2) && (
-                                <p style={{ margin: "2px 0", color: "#16a34a", fontWeight: "700" }}>
-                                  <b>Now:</b> ₹{finalPrice.toFixed(2)}
-                                </p>
-                              )}
+                              {(d1 || d2) && (<p style={{ margin: "2px 0", color: "#16a34a", fontWeight: "700" }}><b>Now:</b> ₹{finalPrice.toFixed(2)}</p>)}
 
-                              {/* Discount breakdown */}
                               {(d1 > 0 || d2 > 0) && (
                                 <div style={{ marginTop: "6px", fontSize: "13px", color: "#e11d48" }}>
-                                  <div>
-                                    <b>Discounts:</b>{" "}
-                                    {d1 > 0 && <span>{d1}% regular</span>}
-                                    {d1 > 0 && d2 > 0 && <span> + </span>}
-                                    {d2 > 0 && <span>{d2}% additional</span>}
-                                  </div>
+                                  <div><b>Discounts:</b>{" "}{d1 > 0 && <span>{d1}% regular</span>}{d1 > 0 && d2 > 0 && <span> + </span>}{d2 > 0 && <span>{d2}% additional</span>}</div>
                                 </div>
                               )}
                             </div>
                           </div>
 
-                          {/* ADD TO CART — bottom-right (fixed) */}
                           <div style={{ position: "absolute", bottom: 16, right: 16, zIndex: 20 }}>
-                            <button
-                              onClick={() => addToCart(pkg)}
-                              style={{
-                                padding: "8px 14px",
-                                background: "#1e90ff",
-                                color: "#fff",
-                                border: "none",
-                                borderRadius: "6px",
-                                cursor: "pointer",
-                                fontWeight: "600",
-                                boxShadow: "0 6px 14px rgba(30,144,255,0.18)",
-                                zIndex: 20,
-                              }}
-                            >
+                            <button onClick={() => addToCart(pkg)} style={{ padding: "8px 14px", background: "#1e90ff", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontWeight: "600", boxShadow: "0 6px 14px rgba(30,144,255,0.18)", zIndex: 20 }}>
                               Add to Cart
                             </button>
                           </div>
@@ -1274,20 +1323,7 @@ const StudentDashboard = () => {
         )}
       </div>
 
-      {/* Cart Sidebar */}
-      <div
-        style={{
-          flex: 1,
-          background: "#ffffff11",
-          padding: "20px",
-          borderRadius: "12px",
-          height: "fit-content",
-          position: "sticky",
-          top: "20px",
-          alignSelf: "start",
-          minWidth: "260px",
-        }}
-      >
+      <div style={{ flex: 1, background: "#ffffff11", padding: "20px", borderRadius: "12px", height: "fit-content", position: "sticky", top: "20px", alignSelf: "start", minWidth: "260px" }} className="desktop-cart">
         <h2 style={{ color: "#fff", marginBottom: "15px" }}>Cart</h2>
         {cart.length === 0 ? (
           <p style={{ color: "#fff" }}>Cart is empty</p>
@@ -1295,115 +1331,122 @@ const StudentDashboard = () => {
           <>
             <ul style={{ listStyle: "none", padding: 0 }}>
               {cart.map((pkg) => (
-                <li
-                  key={pkg.id}
-                  style={{
-                    display: "flex",
-                    justifyContent: "space-between",
-                    marginBottom: "10px",
-                    color: "#fff",
-                    alignItems: "center",
-                    gap: "8px",
-                  }}
-                >
+                <li key={pkg.id} style={{ display: "flex", justifyContent: "space-between", marginBottom: "10px", color: "#fff", alignItems: "center", gap: "8px" }}>
                   <div style={{ flex: 1 }}>
                     <div style={{ fontSize: "14px", fontWeight: 600 }}>{pkg.packageName || pkg.concept}</div>
                     <div style={{ fontSize: "12px", color: "#ddd" }}>{pkg.subject ? normalizeSubject(pkg.subject) : ""}</div>
                   </div>
                   <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
                     <div>₹{parseFloat(pkg.totalPayable || pkg.price || pkg.packageCost || 0).toFixed(2)}</div>
-                    <button
-                      onClick={() => removeFromCart(pkg.id)}
-                      style={{
-                        marginLeft: "10px",
-                        background: "transparent",
-                        border: "none",
-                        color: "#ff4757",
-                        cursor: "pointer",
-                      }}
-                    >
-                      ✕
-                    </button>
+                    <button onClick={() => removeFromCart(pkg.id)} style={{ marginLeft: "10px", background: "transparent", border: "none", color: "#ff4757", cursor: "pointer" }}>✕</button>
                   </div>
                 </li>
               ))}
             </ul>
             <p style={{ color: "#fff", fontWeight: "600" }}>Total: ₹{cartTotal.toFixed(2)}</p>
-            <button
-              onClick={handleCheckout}
-              style={{
-                marginTop: "10px",
-                padding: "10px",
-                width: "100%",
-                background: "#2ed573",
-                color: "#fff",
-                border: "none",
-                borderRadius: "6px",
-                cursor: "pointer",
-                fontWeight: "600",
-              }}
-            >
+            <button onClick={handleCheckout} style={{ marginTop: "10px", padding: "10px", width: "100%", background: "#2ed573", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontWeight: "600" }}>
               Checkout
             </button>
           </>
         )}
       </div>
 
-      {/* Fixed bottom policy/footer buttons (example) */}
-      <div
-        className="bottom-fixed-actions"
-        style={{
-          position: "fixed",
-          bottom: 0,
-          left: 0,
-          width: "100%",
-          zIndex: 1200,
-          display: "flex",
-          gap: "8px",
-          justifyContent: "center",
-          padding: "10px",
-          pointerEvents: "auto",
-        }}
+      {/* Mobile cart floating button */}
+      <button
+        className="mobile-cart-button"
+        onClick={() => setShowMobileCart((s) => !s)}
+        aria-label="Open cart"
       >
-        <button
-          style={{
-            padding: "10px 16px",
-            borderRadius: "8px",
-            border: "none",
-            background: "#111827",
-            color: "#fff",
-            cursor: "pointer",
-            boxShadow: "0 4px 12px rgba(0,0,0,0.25)",
-          }}
-          onClick={() => {
-            window.open("/policies", "_blank");
-          }}
-        >
+        🛒 {cart.length}
+      </button>
+
+      {/* Mobile cart overlay */}
+      {showMobileCart && (
+        <div className="mobile-cart-overlay">
+          <div className="mobile-cart-inner">
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+              <strong>Cart</strong>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button onClick={() => { setShowMobileCart(false); setActiveTab("shop"); }} style={{ background: "transparent", border: "none", cursor: "pointer" }}>Close</button>
+              </div>
+            </div>
+
+            {cart.length === 0 ? (
+              <p style={{ margin: 0 }}>Cart is empty</p>
+            ) : (
+              <>
+                <ul style={{ listStyle: "none", padding: 0, maxHeight: 240, overflowY: "auto" }}>
+                  {cart.map((pkg) => (
+                    <li key={pkg.id} style={{ display: "flex", justifyContent: "space-between", marginBottom: "10px", alignItems: "center" }}>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontSize: "14px", fontWeight: 600 }}>{pkg.packageName || pkg.concept}</div>
+                        <div style={{ fontSize: "12px", color: "#ddd" }}>{pkg.subject ? normalizeSubject(pkg.subject) : ""}</div>
+                      </div>
+                      <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                        <div>₹{parseFloat(pkg.totalPayable || pkg.price || pkg.packageCost || 0).toFixed(2)}</div>
+                        <button onClick={() => removeFromCart(pkg.id)} style={{ marginLeft: "10px", background: "transparent", border: "none", color: "#ff4757", cursor: "pointer" }}>✕</button>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+                <p style={{ fontWeight: 700 }}>Total: ₹{cartTotal.toFixed(2)}</p>
+                <button onClick={() => { setShowMobileCart(false); handleCheckout(); }} style={{ padding: "10px", width: "100%", background: "#2ed573", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontWeight: "600" }}>
+                  Checkout
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
+      <div className="bottom-fixed-actions" style={{ position: "fixed", bottom: 0, left: 0, width: "100%", zIndex: 1200, display: "flex", gap: "8px", justifyContent: "center", padding: "10px", pointerEvents: "auto" }}>
+        <button style={{ padding: "10px 16px", borderRadius: "8px", border: "none", background: "#111827", color: "#fff", cursor: "pointer", boxShadow: "0 4px 12px rgba(0,0,0,0.25)" }} onClick={() => { window.open("/policies", "_blank"); }}>
           Policies
         </button>
-        <button
-          style={{
-            padding: "10px 16px",
-            borderRadius: "8px",
-            border: "none",
-            background: "#111827",
-            color: "#fff",
-            cursor: "pointer",
-            boxShadow: "0 4px 12px rgba(0,0,0,0.25)",
-          }}
-          onClick={() => {
-            window.open("/contact", "_blank");
-          }}
-        >
+        <button style={{ padding: "10px 16px", borderRadius: "8px", border: "none", background: "#111827", color: "#fff", cursor: "pointer", boxShadow: "0 4px 12px rgba(0,0,0,0.25)" }} onClick={() => { window.open("/contact", "_blank"); }}>
           Contact
         </button>
       </div>
 
-      {/* Mobile Styles in JS to ensure immediate effect without touching CSS file */}
       <style>
         {`
-          /* responsive rules (unchanged) */
+          /* Mobile cart floating button */
+          .mobile-cart-button {
+            display: none;
+            position: fixed;
+            top: 84px;
+            right: 12px;
+            z-index: 1400;
+            background: #111827;
+            color: #fff;
+            border: none;
+            padding: 10px 12px;
+            border-radius: 999px;
+            box-shadow: 0 6px 18px rgba(0,0,0,0.28);
+            cursor: pointer;
+            font-weight: 700;
+          }
+
+          .mobile-cart-overlay {
+            position: fixed;
+            right: 12px;
+            top: 100px;
+            width: calc(100% - 24px);
+            max-width: 420px;
+            z-index: 1500;
+            background: rgba(17,24,39,0.95);
+            color: #fff;
+            border-radius: 12px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.6);
+            padding: 12px;
+          }
+
+          .mobile-cart-inner { font-size: 14px; }
+
           @media (max-width: 900px) {
+            .mobile-cart-button { display: block; }
+            .desktop-cart { display: none; }
+
             .student-dashboard {
               flex-direction: column;
               padding-bottom: 260px;
@@ -1423,6 +1466,7 @@ const StudentDashboard = () => {
             .price-sticker { left: 8px !important; top: 8px !important; padding: 5px 6px !important; font-size: 10px !important; min-width: 84px !important; }
             .zoom-card { padding-bottom: 120px; }
             .zoom-card div[aria-hidden] { transform: scale(0.92); }
+            .mobile-cart-overlay { top: 90px; right: 8px; left: 8px; width: calc(100% - 16px); max-width: none; }
           }
         `}
       </style>

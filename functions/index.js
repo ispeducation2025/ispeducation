@@ -1,32 +1,71 @@
 // functions/index.js
 // =======================
 // ISP EDU — Cloud Functions (Payments, Payouts, Notifications, Utilities)
-// Consolidated, robust cloud functions file ready for deployment.
+// Consolidated, corrected and ready for deployment.
+// - Single entrypoint for all callables and webhook
+// - Robust Razorpay webhook (signature verification, safe paise->rupee handling)
+// - Defensive logging; webhook DOES NOT initiate refunds
+// - Permanent safe refund workflow (createRefundIntent + confirmRefund)
 // =======================
 
 const functions = require("firebase-functions");
 const admin = require("firebase-admin");
 const axios = require("axios");
+const crypto = require("crypto");
+const express = require("express");
 
 // fetch compatibility (node 18 global fetch or node-fetch v2)
 let fetchImpl = globalThis.fetch;
 if (!fetchImpl) {
   try {
-    // node-fetch v2 exports function directly via require
     fetchImpl = require("node-fetch");
     if (fetchImpl && fetchImpl.default) fetchImpl = fetchImpl.default;
   } catch (e) {
-    console.warn("node-fetch not found and global fetch missing. Install node-fetch@2 or use Node 18+ with global fetch.");
+    console.warn(
+      "node-fetch not found and global fetch missing. Install node-fetch@2 or use Node 18+ with global fetch."
+    );
     fetchImpl = null;
   }
 }
 
-admin.initializeApp();
+// Initialize admin if not already
+if (!admin.apps.length) admin.initializeApp();
 
 // ----------------------
 // Config / Helpers
 // ----------------------
-const ADMIN_UID = "Q3Z7mgam8IOMQWQqAdwWEQmpqNn2"; // change if required
+const ADMIN_UID =
+  process.env.ADMIN_UID ||
+  (functions.config && functions.config().admin?.uid) ||
+  "Q3Z7mgam8IOMQWQqAdwWEQmpqNn2"; // override via env or functions.config()
+const RAZORPAY_KEY_ID =
+  process.env.RAZORPAY_KEY_ID ||
+  (functions.config && functions.config().razorpay?.key_id) ||
+  null;
+const RAZORPAY_KEY_SECRET =
+  process.env.RAZORPAY_KEY_SECRET ||
+  (functions.config && functions.config().razorpay?.key_secret) ||
+  null;
+const DEFAULT_EMAIL_FROM =
+  process.env.DEFAULT_EMAIL_FROM ||
+  (functions.config && functions.config().mail?.from) ||
+  "ISP Education <no-reply@ispeducation.in>";
+const SENDGRID_KEY =
+  process.env.SENDGRID_KEY ||
+  (functions.config && functions.config().mail?.sendgrid_key) ||
+  null;
+const TWILIO_SID =
+  process.env.TWILIO_SID ||
+  (functions.config && functions.config().twilio?.sid) ||
+  null;
+const TWILIO_TOKEN =
+  process.env.TWILIO_TOKEN ||
+  (functions.config && functions.config().twilio?.token) ||
+  null;
+const TWILIO_WHATSAPP_FROM =
+  process.env.TWILIO_WHATSAPP_FROM ||
+  (functions.config && functions.config().twilio?.from) ||
+  null;
 
 function isAdminUid(uid) {
   return uid === ADMIN_UID;
@@ -38,23 +77,16 @@ async function requireAdmin(context) {
     throw new functions.https.HttpsError("unauthenticated", "Login required.");
   }
   const uid = context.auth.uid;
-  console.log("🔐 requireAdmin -> Caller UID =", uid);
-  if (isAdminUid(uid)) {
+  // Allow admin custom claim OR ADMIN_UID constant
+  const isAdminClaim =
+    context.auth.token && (context.auth.token.admin === true || context.auth.token.isAdmin === true);
+  if (isAdminUid(uid) || isAdminClaim) {
     console.log("✅ ADMIN VERIFIED:", uid);
     return uid;
   }
   console.warn("❌ ADMIN REJECTED:", uid);
   throw new functions.https.HttpsError("permission-denied", "Admin access required.");
 }
-
-// Environment / config extraction (prefers runtime env vars, fallbacks to functions.config())
-const RAZORPAY_KEY_ID = process.env.RAZORPAY_KEY_ID || (functions.config && functions.config().razorpay?.key_id) || null;
-const RAZORPAY_KEY_SECRET = process.env.RAZORPAY_KEY_SECRET || (functions.config && functions.config().razorpay?.key_secret) || null;
-const DEFAULT_EMAIL_FROM = process.env.DEFAULT_EMAIL_FROM || (functions.config && functions.config().mail?.from) || "ISP Education <no-reply@ispeducation.in>";
-const SENDGRID_KEY = process.env.SENDGRID_KEY || (functions.config && functions.config().mail?.sendgrid_key) || null;
-const TWILIO_SID = process.env.TWILIO_SID || (functions.config && functions.config().twilio?.sid) || null;
-const TWILIO_TOKEN = process.env.TWILIO_TOKEN || (functions.config && functions.config().twilio?.token) || null;
-const TWILIO_WHATSAPP_FROM = process.env.TWILIO_WHATSAPP_FROM || (functions.config && functions.config().twilio?.from) || null;
 
 // Lazy-initialized clients
 let sgMail = null;
@@ -119,6 +151,191 @@ async function verifyRazorpayPayment(paymentId, expectedAmount) {
   return data;
 }
 
+// ===== New helper: capture Razorpay payment server-side =====
+async function captureRazorpayPayment(paymentId, expectedAmountRupees) {
+  const RZP_KEY_ID = process.env.RAZORPAY_KEY_ID || RAZORPAY_KEY_ID;
+  const RZP_KEY_SECRET = process.env.RAZORPAY_KEY_SECRET || RAZORPAY_KEY_SECRET;
+  if (!RZP_KEY_ID || !RZP_KEY_SECRET) {
+    throw new Error("Razorpay keys missing: cannot capture.");
+  }
+
+  const url = `https://api.razorpay.com/v1/payments/${paymentId}/capture`;
+  const payload = { amount: Math.round(Number(expectedAmountRupees || 0) * 100) }; // paise
+  const resp = await axios.post(url, payload, {
+    auth: { username: RZP_KEY_ID, password: RZP_KEY_SECRET },
+    timeout: 10000,
+  });
+  return resp.data;
+}
+// ========================================================
+
+// ----------------------------
+// Permanent safety: Defensive axios wrapper
+// ----------------------------
+const _axiosPost = axios.post.bind(axios);
+const _axiosRequest = axios.request ? axios.request.bind(axios) : null;
+
+axios.post = async function (url, data, config) {
+  try {
+    const urlStr = typeof url === "string" ? url : (url && url.url) ? url.url : "";
+    const allow = config && config.__allow_refund_call === true;
+    if (urlStr && urlStr.includes("/refund")) {
+      if (!allow) {
+        console.error("Blocked outgoing POST to refund URL (axios wrapper). URL:", urlStr);
+        const err = new Error("Outgoing refunds are blocked. Use the createRefundIntent/confirmRefund administrative flow.");
+        err.code = "REFUNDS_BLOCKED";
+        throw err;
+      }
+      if (config && config.__allow_refund_call) {
+        delete config.__allow_refund_call;
+      }
+    }
+    return await _axiosPost(url, data, config);
+  } catch (e) {
+    throw e;
+  }
+};
+
+if (_axiosRequest) {
+  axios.request = async function (config) {
+    try {
+      const urlStr = config && (config.url || (config.baseURL ? config.baseURL : "")) ? (config.url || "") : "";
+      const full = (config.baseURL || "") + (config.url || "");
+      const allow = config && config.__allow_refund_call === true;
+      if ((full && full.includes("/refund")) || (urlStr && urlStr.includes("/refund"))) {
+        if (!allow) {
+          console.error("Blocked outgoing request to refund URL (axios.request wrapper). URL:", full || urlStr);
+          const err = new Error("Outgoing refunds are blocked. Use the createRefundIntent/confirmRefund administrative flow.");
+          err.code = "REFUNDS_BLOCKED";
+          throw err;
+        }
+        delete config.__allow_refund_call;
+      }
+      return await _axiosRequest(config);
+    } catch (e) {
+      throw e;
+    }
+  };
+}
+
+async function doRazorpayRefund(paymentId, amountPaise = null, options = {}) {
+  const keyId = process.env.RAZORPAY_KEY_ID || RAZORPAY_KEY_ID;
+  const keySecret = process.env.RAZORPAY_KEY_SECRET || RAZORPAY_KEY_SECRET;
+  if (!keyId || !keySecret) throw new Error("Razorpay keys not configured for refund.");
+
+  const url = `https://api.razorpay.com/v1/payments/${paymentId}/refund`;
+  const payload = {};
+  if (typeof amountPaise === "number") payload.amount = Math.round(amountPaise);
+
+  const resp = await _axiosPost(url, payload, {
+    auth: { username: keyId, password: keySecret },
+    timeout: 20000,
+    __allow_refund_call: true,
+  });
+  return resp.data;
+}
+
+/* =====================================================
+   adminUpdatePayment (callable)
+   - Performs safe admin-only updates to a payments document
+   - Sanitizes arrays so no FieldValue.serverTimestamp() is placed inside arrays
+   - Reconciles top-level server timestamps safely
+   ===================================================== */
+exports.adminUpdatePayment = functions
+  .runWith({ memory: "256MB", timeoutSeconds: 30 })
+  .https.onCall(async (data, context) => {
+    await requireAdmin(context);
+
+    const { paymentId, updates } = data || {};
+    if (!paymentId) {
+      throw new functions.https.HttpsError("invalid-argument", "paymentId required.");
+    }
+    if (!updates || typeof updates !== "object") {
+      throw new functions.https.HttpsError("invalid-argument", "updates object required.");
+    }
+
+    try {
+      const paymentsRef = admin.firestore().collection("payments").doc(String(paymentId));
+      const snap = await paymentsRef.get();
+      if (!snap.exists) {
+        throw new functions.https.HttpsError("not-found", "Payment document not found.");
+      }
+
+      // Deep clone updates to avoid mutating input
+      const sanitized = JSON.parse(JSON.stringify(updates));
+
+      const isServerTimestampToken = (v) =>
+        v === "__SERVER_TIMESTAMP__" ||
+        (v && typeof v === "object" && v.__type === "serverTimestamp");
+
+      function sanitizeValue(val, path = []) {
+        if (Array.isArray(val)) {
+          return val.map((it, idx) => sanitizeValue(it, path.concat([idx])));
+        } else if (val && typeof val === "object") {
+          const out = {};
+          for (const k of Object.keys(val)) {
+            out[k] = sanitizeValue(val[k], path.concat([k]));
+          }
+          return out;
+        } else {
+          if (isServerTimestampToken(val)) {
+            if (path.length === 1) {
+              return { __SANITIZED_AS_SERVER_TIMESTAMP__: true };
+            }
+            return new Date().toISOString();
+          }
+          return val;
+        }
+      }
+
+      const topLevelTimestampFields = {};
+      for (const k of Object.keys(sanitized)) {
+        const v = sanitized[k];
+        const s = sanitizeValue(v, [k]);
+        sanitized[k] = s;
+        if (s && typeof s === "object" && s.__SANITIZED_AS_SERVER_TIMESTAMP__ === true) {
+          topLevelTimestampFields[k] = true;
+          delete sanitized[k];
+        }
+      }
+
+      const finalUpdates = { ...sanitized };
+      const topLevelKeys = Object.keys(topLevelTimestampFields);
+      topLevelKeys.forEach((k) => {
+        finalUpdates[k] = admin.firestore.FieldValue.serverTimestamp();
+      });
+
+      finalUpdates.updatedAt = admin.firestore.FieldValue.serverTimestamp();
+
+      if (Array.isArray(finalUpdates.packages)) {
+        finalUpdates.packages = finalUpdates.packages.map((pkg) => {
+          if (pkg === null || pkg === undefined) return pkg;
+          if (typeof pkg === "object") {
+            const cleaned = {};
+            Object.keys(pkg).forEach((pk) => {
+              const val = pkg[pk];
+              if (val && typeof val === "object" && val.__SANITIZED_AS_SERVER_TIMESTAMP__ === true) {
+                cleaned[pk] = new Date().toISOString();
+              } else {
+                cleaned[pk] = val;
+              }
+            });
+            return cleaned;
+          }
+          return pkg;
+        });
+      }
+
+      await paymentsRef.update(finalUpdates);
+
+      return { success: true, updated: true, paymentId };
+    } catch (err) {
+      console.error("adminUpdatePayment error:", err);
+      if (err instanceof functions.https.HttpsError) throw err;
+      throw new functions.https.HttpsError("internal", err.message || "Internal error");
+    }
+  });
+
 /* =====================================================
    getPromoterStudents (callable)
    ===================================================== */
@@ -136,10 +353,8 @@ exports.getPromoterStudents = functions
         throw new functions.https.HttpsError("invalid-argument", "promoterUniqueId or promoterDocId required.");
       }
 
-      // Admin bypass allowed
-      const callerIsAdmin = isAdminUid(callerUid);
+      const callerIsAdmin = isAdminUid(callerUid) || (context.auth.token && context.auth.token.admin === true);
 
-      // If caller is not admin, ensure they are the promoter in question
       if (!callerIsAdmin) {
         const callerSnap = await admin.firestore().collection("users").doc(callerUid).get();
         const callerData = callerSnap.exists ? callerSnap.data() : null;
@@ -164,7 +379,6 @@ exports.getPromoterStudents = functions
         results[docSnap.id] = { id: docSnap.id, ...docSnap.data() };
       };
 
-      // Try referralId/referral queries first (most common)
       if (promoterUniqueId) {
         try {
           const q1 = await usersCol.where("referralId", "==", promoterUniqueId).get();
@@ -182,7 +396,6 @@ exports.getPromoterStudents = functions
         }
       }
 
-      // promoterDocId -> promoterId match
       if (promoterDocId) {
         try {
           const q3 = await usersCol.where("promoterId", "==", promoterDocId).get();
@@ -193,7 +406,6 @@ exports.getPromoterStudents = functions
         }
       }
 
-      // promoterUid match (either caller or admin-supplied doc)
       const promoterUidToCheck = promoterDocId ? promoterDocId : (!callerIsAdmin ? callerUid : null);
       if (promoterUidToCheck) {
         try {
@@ -205,9 +417,7 @@ exports.getPromoterStudents = functions
         }
       }
 
-      // If still none and promoterUniqueId present, attempt broader variants and full-scan fallback (for small datasets)
       if (Object.keys(results).length === 0 && promoterUniqueId) {
-        // attempt other possible fields
         const altFields = ["referredBy", "referrer", "referred_by", "referral_id", "promoter_id"];
         for (const field of altFields) {
           try {
@@ -215,15 +425,14 @@ exports.getPromoterStudents = functions
             q.forEach((d) => pushIfNew(d));
             if (q.size) console.log(`getPromoterStudents: alt ${field} hits:`, q.size);
           } catch (e) {
-            // many schemas won't have these fields; ignore failure
+            // ignore
           }
         }
       }
 
-      // Final fallback: case-insensitive scan (use with caution on large collections)
       if (Object.keys(results).length === 0 && promoterUniqueId) {
         try {
-          console.warn("getPromoterStudents: no direct matches — performing full collection scan as fallback (may be slow).");
+          console.warn("getPromoterStudents: performing full collection scan as fallback (may be slow).");
           const all = await usersCol.get();
           all.forEach((d) => {
             const u = d.data();
@@ -249,9 +458,117 @@ exports.getPromoterStudents = functions
     }
   });
 
-/* ----------------------
-   CREATE PAYOUT INTENT
-   ---------------------- */
+/* =====================================================
+   getPromoterPayments (callable)
+   ===================================================== */
+exports.getPromoterPayments = functions
+  .runWith({ memory: "256MB", timeoutSeconds: 30 })
+  .https.onCall(async (data, context) => {
+    try {
+      if (!context || !context.auth || !context.auth.uid) {
+        throw new functions.https.HttpsError("unauthenticated", "Authentication required.");
+      }
+      const callerUid = context.auth.uid;
+      const { promoterUniqueId = null, promoterDocId = null, limit = 500 } = data || {};
+
+      if (!promoterUniqueId && !promoterDocId) {
+        throw new functions.https.HttpsError("invalid-argument", "promoterUniqueId or promoterDocId required.");
+      }
+
+      const callerIsAdmin = isAdminUid(callerUid) || (context.auth.token && context.auth.token.admin === true);
+
+      if (!callerIsAdmin) {
+        const callerSnap = await admin.firestore().collection("users").doc(callerUid).get();
+        if (!callerSnap.exists) {
+          throw new functions.https.HttpsError("permission-denied", "Caller user doc not found.");
+        }
+        const callerData = callerSnap.data() || {};
+        const callerUnique = callerData.uniqueId || callerData.uniqueID || null;
+        if (promoterUniqueId && callerUnique && promoterUniqueId !== callerUnique) {
+          throw new functions.https.HttpsError("permission-denied", "Not authorized for that promoterUniqueId.");
+        }
+        if (promoterDocId && promoterDocId !== callerSnap.id) {
+          throw new functions.https.HttpsError("permission-denied", "Not authorized for that promoterDocId.");
+        }
+      }
+
+      const paymentsCol = admin.firestore().collection("payments");
+      const results = [];
+      const push = (docSnap) => {
+        if (!docSnap || !docSnap.exists) return;
+        const data = docSnap.data() || {};
+        results.push({ id: docSnap.id, ...data });
+      };
+
+      if (promoterDocId) {
+        try {
+          const q1 = await paymentsCol.where("promoterId", "==", promoterDocId).orderBy("createdAt", "desc").limit(limit).get();
+          q1.forEach(push);
+          console.log("getPromoterPayments: promoterId hits:", q1.size);
+        } catch (e) {
+          console.warn("getPromoterPayments: q(promoterId) failed:", e);
+        }
+      }
+
+      if (results.length === 0 && promoterUniqueId) {
+        try {
+          const q2 = await paymentsCol.where("promoterUniqueId", "==", promoterUniqueId).orderBy("createdAt", "desc").limit(limit).get();
+          q2.forEach(push);
+          console.log("getPromoterPayments: promoterUniqueId hits:", q2.size);
+        } catch (e) {
+          console.warn("getPromoterPayments: q(promoterUniqueId) failed:", e);
+        }
+      }
+
+      if (results.length === 0 && promoterDocId) {
+        const altFields = ["promoterUid", "promoter", "promoter_id"];
+        for (const field of altFields) {
+          try {
+            const q = await paymentsCol.where(field, "==", promoterDocId).orderBy("createdAt", "desc").limit(limit).get();
+            q.forEach(push);
+            if (q.size) console.log(`getPromoterPayments: alt ${field} hits:`, q.size);
+          } catch (e) {
+            // ignore
+          }
+        }
+      }
+
+      if (results.length === 0 && (promoterUniqueId || promoterDocId)) {
+        try {
+          console.warn("getPromoterPayments: attempting fallback via users collection scan (may be slow).");
+          const usersCol = admin.firestore().collection("users");
+          let qUsers = null;
+          if (promoterUniqueId) qUsers = await usersCol.where("referralId", "==", promoterUniqueId).get();
+          else qUsers = await usersCol.where("promoterId", "==", promoterDocId).get();
+
+          const studentIds = qUsers.docs.map((d) => d.id);
+          for (let i = 0; i < studentIds.length; i += 10) {
+            const slice = studentIds.slice(i, i + 10);
+            try {
+              const q = await paymentsCol.where("studentId", "in", slice).orderBy("createdAt", "desc").limit(limit).get();
+              q.forEach(push);
+            } catch (e) {
+              console.warn("getPromoterPayments fallback payments in() failed:", e);
+            }
+          }
+        } catch (e) {
+          console.warn("getPromoterPayments: users fallback failed:", e);
+        }
+      }
+
+      console.log("getPromoterPayments: returning", results.length, "payments.");
+      return { success: true, payments: results, count: results.length };
+    } catch (err) {
+      console.error("getPromoterPayments error:", err);
+      if (err instanceof functions.https.HttpsError) throw err;
+      throw new functions.https.HttpsError("internal", err.message || "Internal error");
+    }
+  });
+
+/* ===========================
+   createPayoutIntent, confirmPayout
+   =========================== */
+
 exports.createPayoutIntent = functions
   .runWith({ secrets: ["RAZORPAY_KEY_ID", "RAZORPAY_KEY_SECRET"], memory: "256MB", timeoutSeconds: 30 })
   .https.onCall(async (data, context) => {
@@ -296,9 +613,6 @@ exports.createPayoutIntent = functions
     }
   });
 
-/* ----------------------
-   CONFIRM PAYOUT
-   ---------------------- */
 exports.confirmPayout = functions
   .runWith({ secrets: ["RAZORPAY_KEY_ID", "RAZORPAY_KEY_SECRET"], memory: "512MB", timeoutSeconds: 60 })
   .https.onCall(async (data, context) => {
@@ -446,11 +760,12 @@ exports.confirmPayout = functions
   });
 
 /* ============================================================
-   Core payment processing (reused by createPaymentRecord & adminCreatePayment)
-   - Returns { success, details: [{ paymentDocId }...], commissionTotal }
+   processCreatePayment, createPaymentRecord, adminCreatePayment,
+   onPaymentCreated, onUserCreatedSendEmails
+   (full implementations)
    ============================================================ */
+
 async function processCreatePayment(data, context, options = {}) {
-  // options = { requireAdmin: boolean } handled by outer call if needed
   if (!context || !context.auth) {
     throw new functions.https.HttpsError("unauthenticated", "Authentication required.");
   }
@@ -466,12 +781,29 @@ async function processCreatePayment(data, context, options = {}) {
   const studentDbCol = db.collection("studentDatabase");
   const usersCol = db.collection("users");
 
-  // (Optional) server-side verify with Razorpay (best-effort)
+  // (Optional) server-side verify with Razorpay (best-effort) + capture if needed
   let rp = null;
   try {
     rp = await verifyRazorpayPayment(paymentId, totalAmount);
   } catch (e) {
     console.warn("Razorpay verify warning:", e.message || e);
+  }
+
+  // If we have a Razorpay object and it's not captured, attempt server-side capture
+  try {
+    const needsCapture = rp && (rp.captured === false || String(rp.status || "").toLowerCase() === "authorized");
+    if (needsCapture) {
+      try {
+        console.log("Attempting server-side capture for payment:", paymentId, "expected amount:", totalAmount);
+        const cap = await captureRazorpayPayment(paymentId, totalAmount);
+        console.log("Razorpay capture response:", cap && cap.id ? "OK captured" : cap);
+        rp = cap || rp;
+      } catch (capErr) {
+        console.warn("Razorpay capture attempt failed:", capErr?.response?.data || capErr?.message || capErr);
+      }
+    }
+  } catch (err) {
+    console.warn("Capture flow error (non-fatal):", err);
   }
 
   // Resolve promoter doc id (try as uid first, then uniqueId lookup)
@@ -502,6 +834,15 @@ async function processCreatePayment(data, context, options = {}) {
     }
   }
 
+  // Attempt to read user doc to populate name/email/phone if token doesn't have them
+  let callerUserDoc = null;
+  try {
+    const uSnap = await usersCol.doc(callerUid).get();
+    if (uSnap.exists) callerUserDoc = uSnap.data();
+  } catch (e) {
+    console.warn("Could not read users/{uid} in processCreatePayment:", e?.message || e);
+  }
+
   // DEBUG: log incoming payload to help debug packages / commission parsing
   console.log("createPaymentRecord payload:", {
     callerUid,
@@ -524,11 +865,9 @@ async function processCreatePayment(data, context, options = {}) {
   let commissionTotal = 0;
   const nowIso = new Date().toISOString();
 
-  // Transaction: READ promoter doc first (if exists), then perform writes
   await db.runTransaction(async (tx) => {
     const promoterRef = promoterDocId ? usersCol.doc(promoterDocId) : null;
 
-    // READ promoter (if present) before any writes
     let promoterExistingData = null;
     let currentPending = 0;
     if (promoterRef) {
@@ -542,7 +881,6 @@ async function processCreatePayment(data, context, options = {}) {
       }
     }
 
-    // compute per-package commission details first (no writes)
     const computedPackages = [];
     let transCommissionTotal = 0;
     for (const pkg of packages) {
@@ -570,20 +908,29 @@ async function processCreatePayment(data, context, options = {}) {
       transCommissionTotal += commissionAmount;
     }
 
-    // Option A: create separate payment doc per package
+    const studentNameFromToken = context.auth.token ? (context.auth.token.name || null) : null;
+    const studentEmailFromToken = context.auth.token ? (context.auth.token.email || null) : null;
+    const studentPhoneFromToken = context.auth.token ? (context.auth.token.phone || null) : null;
+
+    const finalStudentName = studentNameFromToken || (callerUserDoc && callerUserDoc.name) || null;
+    const finalStudentEmail = studentEmailFromToken || (callerUserDoc && callerUserDoc.email) || null;
+    const finalStudentPhone = studentPhoneFromToken || (callerUserDoc && (callerUserDoc.phone || callerUserDoc.contact || callerUserDoc.mobile)) || null;
+
     if (createPerPackage) {
       for (const cPkg of computedPackages) {
         const singlePaymentDoc = {
           studentId: callerUid,
-          studentName: context.auth.token ? (context.auth.token.name || null) : null,
-          email: context.auth.token ? (context.auth.token.email || null) : null,
-          phone: null,
+          studentName: finalStudentName,
+          email: finalStudentEmail,
+          phone: finalStudentPhone,
           packages: [cPkg],
           paymentId,
           paymentMethod: "razorpay",
           status: "paid",
           settlementStatus: "pending",
           promoterDocId: promoterDocId || null,
+          promoterId: promoterDocId || null,
+          promoterUid: promoterDocId || null,
           promoterResolved: promoterData || promoterExistingData || null,
           commissionTotal: Number(cPkg.commissionAmount || 0),
           commissionPaid: false,
@@ -602,13 +949,12 @@ async function processCreatePayment(data, context, options = {}) {
         createdPaymentDocIds.push(newRef.id);
       }
 
-      // create a single studentDatabase entry referencing the group of payments
       const studentRecordRef = studentDbCol.doc();
       tx.set(studentRecordRef, {
         studentId: callerUid,
-        name: context.auth.token ? (context.auth.token.name || null) : null,
-        email: context.auth.token ? (context.auth.token.email || null) : null,
-        phone: null,
+        name: finalStudentName || null,
+        email: finalStudentEmail || "",
+        phone: finalStudentPhone || null,
         packages: computedPackages,
         totalPackageCost: Number(totalAmount || computedPackages.reduce((s, x) => s + (Number(x.packageCost || 0)), 0).toFixed(2)),
         amount: Number(totalAmount || computedPackages.reduce((s, x) => s + (Number(x.packageCost || 0)), 0).toFixed(2)),
@@ -622,18 +968,19 @@ async function processCreatePayment(data, context, options = {}) {
       });
       createdPaymentDocIds.push(studentRecordRef.id);
     } else {
-      // Option B: create one top-level payment doc containing all packages
       const paymentDoc = {
         studentId: callerUid,
-        studentName: context.auth.token ? (context.auth.token.name || null) : null,
-        email: context.auth.token ? (context.auth.token.email || null) : null,
-        phone: null,
+        studentName: finalStudentName,
+        email: finalStudentEmail,
+        phone: finalStudentPhone,
         packages: computedPackages,
         paymentId,
         paymentMethod: "razorpay",
         status: "paid",
         settlementStatus: "pending",
         promoterDocId: promoterDocId || null,
+        promoterId: promoterDocId || null,
+        promoterUid: promoterDocId || null,
         promoterResolved: promoterData || promoterExistingData || null,
         commissionTotal: Number(transCommissionTotal.toFixed(2)),
         commissionPaid: false,
@@ -651,7 +998,6 @@ async function processCreatePayment(data, context, options = {}) {
       });
       createdPaymentDocIds.push(newPaymentRef.id);
 
-      // studentDatabase record
       const studentRecordRef = studentDbCol.doc();
       tx.set(studentRecordRef, {
         studentId: callerUid,
@@ -672,7 +1018,6 @@ async function processCreatePayment(data, context, options = {}) {
       createdPaymentDocIds.push(studentRecordRef.id);
     }
 
-    // Update promoter pendingAmount atomically (if promoter exists)
     if (promoterRef && transCommissionTotal > 0 && promoterExistingData !== null) {
       const newPending = Number((currentPending + transCommissionTotal).toFixed(2));
       tx.update(promoterRef, {
@@ -685,12 +1030,10 @@ async function processCreatePayment(data, context, options = {}) {
       });
     }
 
-    // finalize commissionTotal for return
     commissionTotal = Number(transCommissionTotal.toFixed(2));
     return;
-  }); // end transaction
+  });
 
-  // Return stable shape (client expects res.data.details array)
   return {
     success: true,
     paymentDocIds: createdPaymentDocIds,
@@ -699,13 +1042,9 @@ async function processCreatePayment(data, context, options = {}) {
   };
 }
 
-/* ----------------------
-   createPaymentRecord (callable)
-   ---------------------- */
 exports.createPaymentRecord = functions
   .runWith({ secrets: ["RAZORPAY_KEY_ID", "RAZORPAY_KEY_SECRET"], memory: "256MB", timeoutSeconds: 90 })
   .https.onCall(async (data, context) => {
-    // normal authenticated caller
     if (!context || !context.auth) throw new functions.https.HttpsError("unauthenticated", "Authentication required.");
     try {
       const res = await processCreatePayment(data, context, { requireAdmin: false });
@@ -717,16 +1056,11 @@ exports.createPaymentRecord = functions
     }
   });
 
-/* ----------------------
-   adminCreatePayment (callable) - admin-only wrapper if client attempts adminCreatePayment
-   ---------------------- */
 exports.adminCreatePayment = functions
   .runWith({ secrets: ["RAZORPAY_KEY_ID", "RAZORPAY_KEY_SECRET"], memory: "256MB", timeoutSeconds: 90 })
   .https.onCall(async (data, context) => {
-    // requires caller to be admin UID (requireAdmin will enforce)
     await requireAdmin(context);
     try {
-      // Expect data.payment to contain the payload (mirrors client usage)
       const payload = data.payment || data;
       const res = await processCreatePayment(payload, context, { requireAdmin: true });
       return res;
@@ -737,10 +1071,6 @@ exports.adminCreatePayment = functions
     }
   });
 
-/* ----------------------
-   onPaymentCreated trigger - sends email and whatsapp notifications
-   Also ensures promoter doc fields are updated if needed (defensive).
-   ---------------------- */
 exports.onPaymentCreated = functions
   .runWith({ secrets: ["SENDGRID_KEY", "TWILIO_SID", "TWILIO_TOKEN"], memory: "256MB", timeoutSeconds: 30 })
   .firestore.document("payments/{paymentId}")
@@ -749,7 +1079,7 @@ exports.onPaymentCreated = functions
       const payment = snap.data() || {};
       const id = ctx.params.paymentId;
       const studentEmail = payment.email || payment.studentEmail || null;
-      const studentPhone = payment.phone || payment.studentPhone || payment.contact || null;
+      let studentPhone = payment.phone || payment.studentPhone || payment.contact || null;
       const studentName = payment.studentName || payment.name || "Student";
       const packageNames = (payment.packages && Array.isArray(payment.packages)) ? payment.packages.map(p => p.packageName || p.packageId || p.id).join(", ") : (payment.packageName || "Package");
       const amount = Number(payment.amount || payment.totalPackageCost || payment.packages?.reduce((s,p)=>s+(Number(p.packageCost||0)),0) || 0);
@@ -779,7 +1109,7 @@ exports.onPaymentCreated = functions
 
       // Defensive: Update promoter doc pendingAmount if payment contains promoterDocId and commissionTotal but promoter.pendingAmount missing
       try {
-        const promoterDocId = payment.promoterDocId || payment.promoterUid || payment.promoter_id || payment.promoter;
+        const promoterDocId = payment.promoterDocId || payment.promoterId || payment.promoterUid || payment.promoter || payment.promoter_id || null;
         if (promoterDocId && Number(payment.commissionTotal || 0) > 0) {
           const promoterRef = admin.firestore().collection("users").doc(promoterDocId);
           await admin.firestore().runTransaction(async (tx) => {
@@ -801,10 +1131,32 @@ exports.onPaymentCreated = functions
         console.warn("Promoter update in onPaymentCreated error:", e);
       }
 
+      // If student phone missing, attempt to fetch from users/{studentId}
+      if (!studentPhone) {
+        try {
+          const studentId = payment.studentId || payment.student || null;
+          if (studentId) {
+            const uSnap = await admin.firestore().collection("users").doc(studentId).get();
+            if (uSnap.exists) {
+              const u = uSnap.data() || {};
+              studentPhone = studentPhone || u.phone || u.contact || u.mobile || null;
+              if (studentPhone) {
+                try {
+                  await snap.ref.update({ phone: studentPhone }).catch(() => {});
+                } catch (e) {
+                  // ignore
+                }
+              }
+            }
+          }
+        } catch (e) {
+          console.warn("onPaymentCreated: could not fetch users/{studentId} fallback:", e);
+        }
+      }
+
       // Send emails via SendGrid
       const mailClient = getSgMail();
       if (studentEmail && mailClient) {
-        // purchase email
         const purchaseHtml = `
           <p>Hi ${studentName},</p>
           <p>Thanks for purchasing <strong>${packageNames}</strong> for <strong>₹${amount.toFixed(2)}</strong>.</p>
@@ -837,6 +1189,10 @@ exports.onPaymentCreated = functions
         } catch (e) {
           console.warn("Twilio WhatsApp send failed:", e?.message || e);
         }
+      } else {
+        if (!tw) console.log("Twilio client not configured or missing credentials - skipping WhatsApp send.");
+        if (!TWILIO_WHATSAPP_FROM) console.log("TWILIO_WHATSAPP_FROM not configured - skipping WhatsApp send.");
+        if (!studentPhone) console.log("Student phone missing - cannot send WhatsApp.");
       }
 
       console.log("onPaymentCreated done for", id);
@@ -847,9 +1203,6 @@ exports.onPaymentCreated = functions
     }
   });
 
-/* ----------------------
-   onUserCreatedSendEmails - welcome + promoter notification
-   ---------------------- */
 exports.onUserCreatedSendEmails = functions
   .runWith({ secrets: ["SENDGRID_KEY"], memory: "128MB", timeoutSeconds: 30 })
   .firestore.document("users/{uid}")
@@ -959,4 +1312,401 @@ exports.onUserCreatedSendEmails = functions
     }
   });
 
-// End of file
+/*
+ * Razorpay Webhook Handler
+ *
+ * Robust webhook handler for Razorpay events:
+ * - verifies signature (HMAC-SHA256) using timingSafeEqual
+ * - updates payments docs for payment/refund related events
+ * - fallback: writes an entry to `refunds` collection when no payment doc found
+ *
+ * NOTE: This webhook handler DOES NOT initiate refunds. It attaches refund events to payment docs
+ * and records orphan/refund docs for reconciliation. If refunds are being triggered automatically,
+ * search your repo for explicit refund API calls. This repository now permanently blocks any
+ * outgoing /refund requests except via the confirmRefund admin callable above.
+ */
+
+const getWebhookSecret = () => {
+  return (
+    process.env.RAZORPAY_WEBHOOK_SECRET ||
+    (functions.config && functions.config().razorpay && functions.config().razorpay.webhook_secret) ||
+    null
+  );
+};
+
+const app = express();
+
+app.use(
+  express.json({
+    verify: (req, res, buf) => {
+      req.rawBody = buf;
+    },
+  })
+);
+
+function verifySignature(rawBodyBuffer, signatureHeader, secret) {
+  if (!secret) {
+    console.warn("No webhook secret configured for verification.");
+    return false;
+  }
+  try {
+    const expected = crypto.createHmac("sha256", secret).update(rawBodyBuffer).digest("hex");
+    const sigBuf = Buffer.from(signatureHeader || "", "utf8");
+    const expBuf = Buffer.from(expected || "", "utf8");
+    if (sigBuf.length !== expBuf.length) return false;
+    return crypto.timingSafeEqual(sigBuf, expBuf);
+  } catch (e) {
+    console.error("verifySignature error", e);
+    return false;
+  }
+}
+
+async function findPaymentDocByRazorpayId(db, rzpPaymentId) {
+  if (!rzpPaymentId) return null;
+  const paymentsCol = db.collection("payments");
+
+  try {
+    const q1 = await paymentsCol.where("paymentId", "==", rzpPaymentId).limit(10).get();
+    if (!q1.empty) return q1.docs[0];
+  } catch (e) {
+    console.warn("Query paymentId failed:", e?.message || e);
+  }
+
+  try {
+    const q2 = await paymentsCol.where("rawRazorpay.id", "==", rzpPaymentId).limit(10).get();
+    if (!q2.empty) return q2.docs[0];
+  } catch (e) {
+    console.warn("Query rawRazorpay.id failed (or unsupported) - will fallback to client-side scan:", e?.message || e);
+  }
+
+  try {
+    const docSnap = await paymentsCol.doc(rzpPaymentId).get();
+    if (docSnap.exists) return docSnap;
+  } catch (e) {}
+
+  try {
+    console.warn("findPaymentDocByRazorpayId: performing full scan fallback (may be slow).");
+    const all = await paymentsCol.limit(1000).get();
+    for (const d of all.docs) {
+      const data = d.data() || {};
+      const candidates = [
+        String(data.paymentId || "").trim(),
+        String(data.id || "").trim(),
+        String((data.rawRazorpay && data.rawRazorpay.id) || "").trim(),
+        String(data.paymentID || "").trim(),
+        String(data.payment_id || "").trim(),
+      ].filter(Boolean);
+      for (const c of candidates) {
+        if (c === rzpPaymentId) {
+          return d;
+        }
+      }
+    }
+  } catch (e) {
+    console.warn("Full-scan fallback failed:", e?.message || e);
+  }
+
+  return null;
+}
+
+app.post("/", async (req, res) => {
+  const rawBody = req.rawBody || Buffer.from(JSON.stringify(req.body || {}));
+  const sig = (req.get("X-Razorpay-Signature") || req.get("x-razorpay-signature") || "").toString();
+  const secret = getWebhookSecret();
+
+  if (!verifySignature(rawBody, sig, secret)) {
+    console.warn("Razorpay signature mismatch. Rejecting webhook.");
+    return res.status(400).json({ ok: false, error: "signature_mismatch" });
+  }
+
+  const event = (req.body && req.body.event) || null;
+  const contains = (req.body && req.body.contains) || [];
+  const payload = req.body && req.body.payload ? req.body.payload : {};
+
+  console.log("Incoming Razorpay event:", event, "contains:", contains);
+
+  const db = admin.firestore();
+
+  try {
+    if (event && event.startsWith("refund")) {
+      const refundEntity = payload.refund && payload.refund.entity ? payload.refund.entity : null;
+      const rzpRefundId = (refundEntity && refundEntity.id) || (payload.refund && payload.refund.id) || null;
+      const rzpPaymentId =
+        (refundEntity && refundEntity.payment_id) ||
+        (refundEntity && refundEntity.paymentId) ||
+        (req.body && req.body.payload && req.body.payload.payment && (req.body.payload.payment.entity && req.body.payload.payment.entity.id)) ||
+        (req.body && req.body.payload && req.body.payload.payment && req.body.payload.payment.id) ||
+        (req.body && req.body.payload && req.body.payload.refund && req.body.payload.refund.entity && req.body.payload.refund.entity.payment_id) ||
+        null;
+
+      const refundAmount = refundEntity && (refundEntity.amount || refundEntity.amount_refunded || refundEntity.value) ? Number(refundEntity.amount || refundEntity.amount_refunded || refundEntity.value) : null;
+      const refundStatus = refundEntity && refundEntity.status ? String(refundEntity.status) : (req.body && req.body.payload && req.body.payload.refund && req.body.payload.refund.entity && req.body.payload.refund.entity.status) || null;
+      const refundReason = refundEntity && refundEntity.reason ? String(refundEntity.reason) : null;
+      const refundCreatedAt = refundEntity && refundEntity.created_at ? new Date((refundEntity.created_at||0) * 1000) : new Date();
+
+      console.log("Refund event:", { rzpRefundId, rzpPaymentId, refundAmount, refundStatus, refundReason });
+
+      let paymentsDoc = null;
+      if (rzpPaymentId) {
+        paymentsDoc = await findPaymentDocByRazorpayId(db, rzpPaymentId);
+      }
+
+      if (!paymentsDoc) {
+        const note = {
+          rzpRefundId,
+          rzpPaymentId,
+          refundAmount,
+          refundStatus,
+          refundReason,
+          rawEvent: req.body,
+          createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        };
+        const refDoc = await db.collection("refunds").add(note);
+        console.log("No matching payment doc — created refunds doc:", refDoc.id);
+        return res.status(200).json({ ok: true, note: "no_matching_payment_doc", refundsDocId: refDoc.id });
+      }
+
+      const payRef = paymentsDoc.ref;
+      const payData = paymentsDoc.data() || {};
+
+      let refundAmountRupees = null;
+      if (typeof refundAmount === "number") {
+        if (Math.abs(refundAmount) >= 1000 || (Math.abs(refundAmount) >= 100 && refundAmount % 100 === 0)) {
+          refundAmountRupees = Math.round((refundAmount / 100) * 100) / 100;
+        } else {
+          refundAmountRupees = Math.round((refundAmount) * 100) / 100;
+        }
+      }
+
+      const updates = {
+        refundId: rzpRefundId || admin.firestore.FieldValue.delete,
+        refundStatus: refundStatus || admin.firestore.FieldValue.delete,
+        refundReason: refundReason || admin.firestore.FieldValue.delete,
+        amount_refunded: refundAmountRupees != null ? refundAmountRupees : (admin.firestore.FieldValue.delete && payData.amount_refunded),
+        refund_raw_event: req.body,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      };
+
+      if (refundStatus && refundStatus.toLowerCase() === "processed") {
+        updates.settlementStatus = "refunded";
+        updates.status = "refunded";
+      } else if (refundStatus && refundStatus.toLowerCase() === "failed") {
+        updates.settlementStatus = "refund_failed";
+      }
+
+      if (Array.isArray(payData.packages) && rzpRefundId) {
+        try {
+          const updatedPackages = payData.packages.map((pkg) => {
+            const clone = { ...pkg };
+            if (!Array.isArray(clone.refunds)) clone.refunds = clone.refunds || [];
+            clone.refunds.push({
+              refundId: rzpRefundId,
+              amount: refundAmountRupees,
+              status: refundStatus,
+              reason: refundReason,
+              createdAt: admin.firestore.FieldValue.serverTimestamp(),
+            });
+            return clone;
+          });
+          updates.packages = updatedPackages;
+        } catch (e) {
+          console.warn("Unable to update packages array with refund info:", e?.message || e);
+        }
+      }
+
+      await payRef.update(updates);
+
+      console.log("Updated payment doc with refund info:", payRef.id);
+      return res.status(200).json({ ok: true, note: "refund_attached", paymentDocId: payRef.id });
+    }
+
+    if (event === "payment.captured" || event === "payment.authorized" || event === "payment.failed") {
+      const paymentEntity =
+        (req.body && req.body.payload && req.body.payload.payment && req.body.payload.payment.entity) || req.body.payload || null;
+      const rzpPaymentId = (paymentEntity && (paymentEntity.id || paymentEntity.payment_id)) || null;
+      const status = (paymentEntity && paymentEntity.status) || (event === "payment.captured" ? "captured" : event === "payment.authorized" ? "authorized" : "failed");
+      const amount = paymentEntity && (paymentEntity.amount || paymentEntity.amount_paid || paymentEntity.amount_refunded) ? Number(paymentEntity.amount || paymentEntity.amount_paid || paymentEntity.amount_refunded) : null;
+
+      console.log("Payment event:", { rzpPaymentId, event, status, amount });
+
+      let paymentsDoc = null;
+      if (rzpPaymentId) paymentsDoc = await findPaymentDocByRazorpayId(db, rzpPaymentId);
+
+      if (!paymentsDoc) {
+        const orphan = {
+          rzpPaymentId,
+          event,
+          status,
+          amount,
+          rawEvent: req.body,
+          createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        };
+        const ref = await db.collection("orphanPayments").add(orphan);
+        console.log("No matching payment doc for payment event — created orphanPayments doc:", ref.id);
+        return res.status(200).json({ ok: true, note: "no_matching_payment_doc", orphanId: ref.id });
+      }
+
+      const payRef = paymentsDoc.ref;
+      const toSet = { updatedAt: admin.firestore.FieldValue.serverTimestamp(), rawWebhookEvent: req.body };
+      if (status) toSet.status = status;
+      if (typeof amount === "number") {
+        let amountRupees = amount;
+        if (Math.abs(amount) >= 1000 || (Math.abs(amount) >= 100 && amount % 100 === 0)) amountRupees = Math.round((amount / 100) * 100) / 100;
+        toSet.amount = amountRupees;
+      }
+      if (event === "payment.captured") toSet.settlementStatus = "captured";
+      if (event === "payment.authorized") toSet.settlementStatus = "authorized";
+      if (event === "payment.failed") toSet.settlementStatus = "failed";
+
+      try {
+        const shortUrl = (paymentEntity && (paymentEntity.short_url || paymentEntity.shortUrl)) || null;
+        if (shortUrl) toSet.receiptUrl = shortUrl;
+      } catch (e) {}
+
+      await payRef.update(toSet);
+      console.log("Updated payment doc for payment event:", payRef.id);
+      return res.status(200).json({ ok: true, note: "payment_attached", paymentDocId: payRef.id });
+    }
+
+    console.log("Unhandled event (accepted):", event);
+    return res.status(200).json({ ok: true, note: "unhandled_event" });
+  } catch (err) {
+    console.error("Webhook handler error:", err);
+    return res.status(500).json({ ok: false, error: err?.message || String(err) });
+  }
+});
+
+// Export Cloud Function
+exports.razorpayWebhook = functions.https.onRequest(app);
+
+/* -----------------------------
+   New permanent refund workflow
+   ----------------------------- */
+
+exports.createRefundIntent = functions
+  .runWith({ memory: "256MB", timeoutSeconds: 30 })
+  .https.onCall(async (data, context) => {
+    await requireAdmin(context);
+    const { paymentDocId = null, rzpPaymentId = null, amount = null, reason = "", meta = null } = data || {};
+    if (!paymentDocId && !rzpPaymentId) {
+      throw new functions.https.HttpsError("invalid-argument", "paymentDocId or rzpPaymentId required.");
+    }
+
+    try {
+      const note = {
+        paymentDocId: paymentDocId || null,
+        rzpPaymentId: rzpPaymentId || null,
+        amount: amount != null ? Number(amount) : null,
+        amountPaise: amount != null ? Math.round(Number(amount) * 100) : null,
+        reason: reason || "",
+        meta: meta || null,
+        status: "pending",
+        createdBy: context.auth.uid,
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        history: [
+          { ts: admin.firestore.FieldValue.serverTimestamp(), by: context.auth.uid, note: "intent_created" },
+        ],
+      };
+      const ref = await admin.firestore().collection("refunds").add(note);
+      console.log("createRefundIntent: created refund intent:", ref.id);
+      return { success: true, refundId: ref.id };
+    } catch (err) {
+      console.error("createRefundIntent error:", err);
+      throw new functions.https.HttpsError("internal", "Failed to create refund intent: " + (err.message || err));
+    }
+  });
+
+exports.confirmRefund = functions
+  .runWith({ secrets: ["RAZORPAY_KEY_ID", "RAZORPAY_KEY_SECRET"], memory: "512MB", timeoutSeconds: 90 })
+  .https.onCall(async (data, context) => {
+    await requireAdmin(context);
+
+    const { refundId, captureAmountPaise = null, note = "" } = data || {};
+    if (!refundId) {
+      throw new functions.https.HttpsError("invalid-argument", "refundId required.");
+    }
+
+    const refundsCol = admin.firestore().collection("refunds");
+    const rRef = refundsCol.doc(refundId);
+    const rSnap = await rRef.get();
+    if (!rSnap.exists) {
+      throw new functions.https.HttpsError("not-found", "Refund intent not found.");
+    }
+    const rDoc = rSnap.data() || {};
+    if (rDoc.status === "processed" || rDoc.status === "failed") {
+      console.log("confirmRefund: refund already finalized:", refundId, rDoc.status);
+      return { success: false, message: "Refund already finalized", status: rDoc.status };
+    }
+
+    const rzpPaymentId = rDoc.rzpPaymentId || null;
+    if (!rzpPaymentId) {
+      throw new functions.https.HttpsError("failed-precondition", "rzpPaymentId missing on refund intent.");
+    }
+
+    await rRef.update({
+      status: "processing",
+      processingBy: context.auth.uid,
+      processingAt: admin.firestore.FieldValue.serverTimestamp(),
+      history: admin.firestore.FieldValue.arrayUnion({
+        ts: admin.firestore.FieldValue.serverTimestamp(),
+        by: context.auth.uid,
+        note: "processing_started",
+      }),
+    });
+
+    try {
+      const resp = await doRazorpayRefund(rzpPaymentId, captureAmountPaise != null ? Number(captureAmountPaise) : rDoc.amountPaise || null);
+
+      await rRef.update({
+        providerResponse: resp,
+        status: "processed",
+        processedAt: admin.firestore.FieldValue.serverTimestamp(),
+        processedBy: context.auth.uid,
+        history: admin.firestore.FieldValue.arrayUnion({
+          ts: admin.firestore.FieldValue.serverTimestamp(),
+          by: context.auth.uid,
+          note: "processed",
+          providerId: resp?.id || null,
+        }),
+        note: note || rDoc.note || null,
+      });
+
+      if (rDoc.paymentDocId) {
+        try {
+          const payRef = admin.firestore().collection("payments").doc(rDoc.paymentDocId);
+          await payRef.update({
+            refundId: resp?.id || null,
+            refundStatus: resp?.status || "processed",
+            amount_refunded: (resp && resp.amount) ? (Number(resp.amount) >= 100 ? Math.round((resp.amount / 100) * 100) / 100 : Math.round(resp.amount * 100) / 100) : admin.firestore.FieldValue.delete,
+            refund_raw_event: resp,
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          });
+        } catch (uErr) {
+          console.warn("confirmRefund: failed to update payment doc after refund:", uErr);
+        }
+      }
+
+      console.log("confirmRefund: refund processed:", refundId, resp?.id || resp);
+      return { success: true, refundId, providerResponse: resp };
+    } catch (err) {
+      console.error("confirmRefund error:", err);
+      try {
+        await rRef.update({
+          status: "failed",
+          failedAt: admin.firestore.FieldValue.serverTimestamp(),
+          failedBy: context.auth.uid,
+          providerError: err?.response?.data || err?.message || String(err),
+          history: admin.firestore.FieldValue.arrayUnion({
+            ts: admin.firestore.FieldValue.serverTimestamp(),
+            by: context.auth.uid,
+            note: "failed",
+            error: err?.message || String(err),
+          }),
+        });
+      } catch (uErr) {
+        console.error("confirmRefund: failed to update refund doc on error:", uErr);
+      }
+      throw new functions.https.HttpsError("internal", "Refund failed: " + (err?.message || String(err)));
+    }
+  });
+
