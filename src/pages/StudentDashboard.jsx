@@ -1,6 +1,7 @@
 /* src/pages/StudentDashboard.jsx */
 /* eslint-disable */
 import React, { useEffect, useMemo, useState } from "react";
+import { createPortal } from "react-dom";
 import { db, auth } from "../firebase/firebaseConfig";
 import {
   doc,
@@ -77,6 +78,98 @@ function getFunctionsInstance() {
   }
 }
 
+/* ---------------------------
+   MobileCart (Portal)
+   - Renders fixed top-right cart overlay into document.body
+   - Always position: fixed so it won't be affected by parent transforms
+   --------------------------- */
+const MobileCart = ({ visible, cart, cartTotal, onClose, onRemove, onCheckout }) => {
+  if (typeof document === "undefined") return null;
+  return createPortal(
+    <>
+      {visible && (
+        <div
+          className="mobile-cart-portal-backdrop"
+          onClick={(e) => {
+            // close when clicking backdrop (not the panel)
+            if (e.target === e.currentTarget) onClose();
+          }}
+          aria-hidden={!visible}
+        >
+          <div className="mobile-cart-portal-panel" role="dialog" aria-modal="true">
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+              <strong style={{ fontSize: 16 }}>Cart</strong>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button onClick={onClose} style={{ background: "transparent", border: "none", color: "#fff", cursor: "pointer" }}>
+                  Close
+                </button>
+              </div>
+            </div>
+
+            {cart.length === 0 ? (
+              <p style={{ margin: 0 }}>Cart is empty</p>
+            ) : (
+              <>
+                <ul style={{ listStyle: "none", padding: 0, maxHeight: 320, overflowY: "auto", marginBottom: 8 }}>
+                  {cart.map((pkg) => (
+                    <li key={pkg.id} style={{ display: "flex", justifyContent: "space-between", marginBottom: "10px", alignItems: "center" }}>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontSize: "14px", fontWeight: 600 }}>{pkg.packageName || pkg.concept}</div>
+                        <div style={{ fontSize: "12px", color: "#ddd" }}>{pkg.subject ? normalizeSubject(pkg.subject) : ""}</div>
+                      </div>
+                      <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                        <div>₹{parseFloat(pkg.totalPayable ?? pkg.price ?? pkg.packageCost ?? 0).toFixed(2)}</div>
+                        <button onClick={() => onRemove(pkg.id)} style={{ marginLeft: "10px", background: "transparent", border: "none", color: "#ff6b6b", cursor: "pointer" }}>
+                          ✕
+                        </button>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+
+                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 10, alignItems: "center" }}>
+                  <div style={{ fontWeight: 700 }}>Total</div>
+                  <div style={{ fontWeight: 700 }}>₹{cartTotal.toFixed(2)}</div>
+                </div>
+
+                <button
+                  onClick={() => {
+                    onClose();
+                    onCheckout();
+                  }}
+                  style={{
+                    padding: "10px",
+                    width: "100%",
+                    background: "#2ed573",
+                    color: "#071215",
+                    border: "none",
+                    borderRadius: "8px",
+                    cursor: "pointer",
+                    fontWeight: "700",
+                    fontSize: 16,
+                  }}
+                >
+                  Checkout
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+      {/* Floating button always visible on mobile (top-right) */}
+      <button
+        className="mobile-cart-button-portal"
+        aria-label="Open cart"
+        onClick={onClose ? () => onClose() : () => {}}
+        style={{ display: visible ? "none" : "block" }}
+      >
+        🛒 {cart.length}
+      </button>
+    </>,
+    document.body
+  );
+};
+
 const StudentDashboard = () => {
   const navigate = useNavigate();
   const [studentInfo, setStudentInfo] = useState({ name: "", classGrade: "", syllabus: "", mappedPromoter: "", phone: "" });
@@ -92,7 +185,7 @@ const StudentDashboard = () => {
   const [studentReports, setStudentReports] = useState([]);
   const [loadingReports, setLoadingReports] = useState(false);
 
-  // Mobile cart visibility
+  // Mobile cart visibility (we'll control via portal)
   const [showMobileCart, setShowMobileCart] = useState(false);
 
   const functions = useMemo(() => getFunctionsInstance(), []);
@@ -221,6 +314,7 @@ const StudentDashboard = () => {
 
   const addToCart = (pkg) => {
     if (!cart.find((p) => p.id === pkg.id)) setCart((c) => [...c, pkg]);
+    // auto-open mobile cart on small screens
     if (window.innerWidth <= 900) setShowMobileCart(true);
   };
   const removeFromCart = (id) => setCart((c) => c.filter((p) => p.id !== id));
@@ -1301,52 +1395,25 @@ const StudentDashboard = () => {
         )}
       </div>
 
-      {/* Mobile cart floating button */}
-      <button
-        className="mobile-cart-button"
-        onClick={() => setShowMobileCart((s) => !s)}
-        aria-label="Open cart"
-      >
-        🛒 {cart.length}
-      </button>
+      {/* Mobile cart portal (render to body) */}
+      <MobileCart
+        visible={showMobileCart}
+        cart={cart}
+        cartTotal={cartTotal}
+        onClose={() => setShowMobileCart(false)}
+        onRemove={(id) => removeFromCart(id)}
+        onCheckout={handleCheckout}
+      />
 
-      {/* Mobile cart overlay */}
-      {showMobileCart && (
-        <div className="mobile-cart-overlay">
-          <div className="mobile-cart-inner">
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-              <strong>Cart</strong>
-              <div style={{ display: "flex", gap: 8 }}>
-                <button onClick={() => { setShowMobileCart(false); setActiveTab("shop"); }} style={{ background: "transparent", border: "none", cursor: "pointer" }}>Close</button>
-              </div>
-            </div>
-
-            {cart.length === 0 ? (
-              <p style={{ margin: 0 }}>Cart is empty</p>
-            ) : (
-              <>
-                <ul style={{ listStyle: "none", padding: 0, maxHeight: 240, overflowY: "auto" }}>
-                  {cart.map((pkg) => (
-                    <li key={pkg.id} style={{ display: "flex", justifyContent: "space-between", marginBottom: "10px", alignItems: "center" }}>
-                      <div style={{ flex: 1 }}>
-                        <div style={{ fontSize: "14px", fontWeight: 600 }}>{pkg.packageName || pkg.concept}</div>
-                        <div style={{ fontSize: "12px", color: "#ddd" }}>{pkg.subject ? normalizeSubject(pkg.subject) : ""}</div>
-                      </div>
-                      <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                        <div>₹{parseFloat(pkg.totalPayable || pkg.price || pkg.packageCost || 0).toFixed(2)}</div>
-                        <button onClick={() => removeFromCart(pkg.id)} style={{ marginLeft: "10px", background: "transparent", border: "none", color: "#ff4757", cursor: "pointer" }}>✕</button>
-                      </div>
-                    </li>
-                  ))}
-                </ul>
-                <p style={{ fontWeight: 700 }}>Total: ₹{cartTotal.toFixed(2)}</p>
-                <button onClick={() => { setShowMobileCart(false); handleCheckout(); }} style={{ padding: "10px", width: "100%", background: "#2ed573", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontWeight: "600" }}>
-                  Checkout
-                </button>
-              </>
-            )}
-          </div>
-        </div>
+      {/* Mobile floating button (when mobile cart closed) */}
+      {!showMobileCart && (
+        <button
+          className="mobile-cart-button"
+          onClick={() => setShowMobileCart(true)}
+          aria-label="Open cart"
+        >
+          🛒 {cart.length}
+        </button>
       )}
 
       <div className="bottom-fixed-actions" style={{ position: "fixed", bottom: 0, left: 0, width: "100%", zIndex: 1200, display: "flex", gap: "8px", justifyContent: "center", padding: "10px", pointerEvents: "auto" }}>
@@ -1360,13 +1427,13 @@ const StudentDashboard = () => {
 
       <style>
         {`
-          /* Mobile cart floating button */
+          /* Mobile cart floating button (desktop hidden) */
           .mobile-cart-button {
             display: none;
             position: fixed;
             top: 84px;
             right: 12px;
-            z-index: 1400;
+            z-index: 1600;
             background: #111827;
             color: #fff;
             border: none;
@@ -1377,25 +1444,44 @@ const StudentDashboard = () => {
             font-weight: 700;
           }
 
-          .mobile-cart-overlay {
+          /* Portal backdrop & panel */
+          .mobile-cart-portal-backdrop {
             position: fixed;
-            right: 12px;
-            top: 100px;
-            width: calc(100% - 24px);
-            max-width: 420px;
-            z-index: 1500;
-            background: rgba(17,24,39,0.95);
-            color: #fff;
-            border-radius: 12px;
-            box-shadow: 0 10px 40px rgba(0,0,0,0.6);
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            z-index: 1700;
+            display: flex;
+            justify-content: flex-end;
+            align-items: flex-start;
             padding: 12px;
+            background: rgba(0,0,0,0.25);
           }
 
-          .mobile-cart-inner { font-size: 14px; }
+          .mobile-cart-portal-panel {
+            position: relative;
+            margin-top: 72px;
+            width: min(420px, 94%);
+            max-height: calc(100vh - 140px);
+            overflow: auto;
+            background: linear-gradient(180deg, rgba(17,24,39,0.98), rgba(7,10,14,0.98));
+            color: #fff;
+            border-radius: 12px;
+            padding: 12px;
+            box-shadow: 0 24px 60px rgba(0,0,0,0.5);
+            border: 1px solid rgba(255,255,255,0.04);
+          }
+
+          .mobile-cart-portal-panel::-webkit-scrollbar { width: 8px; height: 8px; }
+          .mobile-cart-portal-panel::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.06); border-radius: 8px; }
+
+          .mobile-cart-button-portal {
+            display: none;
+          }
 
           @media (max-width: 900px) {
             .mobile-cart-button { display: block; }
-            .desktop-cart { display: none; }
 
             .student-dashboard {
               flex-direction: column;
@@ -1416,7 +1502,6 @@ const StudentDashboard = () => {
             .price-sticker { left: 8px !important; top: 8px !important; padding: 5px 6px !important; font-size: 10px !important; min-width: 84px !important; }
             .zoom-card { padding-bottom: 120px; }
             .zoom-card div[aria-hidden] { transform: scale(0.92); }
-            .mobile-cart-overlay { top: 90px; right: 8px; left: 8px; width: calc(100% - 16px); max-width: none; }
           }
         `}
       </style>
